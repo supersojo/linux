@@ -249,10 +249,12 @@ int nand_bbm_get_next_page(struct nand_chip *chip, int page)
  *
  * Check, if the block is bad.
  */
+#define HACK_NO_BAD
 static int nand_block_bad(struct nand_chip *chip, loff_t ofs)
 {
 	int first_page, page_offset;
 	int res;
+	int i;
 	u8 bad;
 
 	first_page = (int)(ofs >> chip->page_shift) & chip->pagemask;
@@ -262,9 +264,20 @@ static int nand_block_bad(struct nand_chip *chip, loff_t ofs)
 		res = chip->ecc.read_oob(chip, first_page + page_offset);
 		if (res < 0)
 			return res;
+#ifdef HACK_NO_BAD
+		printk("page:0x%x with oob\n", first_page);
+		for (i=0; i<8; i+=4) {
+			printk("%02x:%02x %02x %02x %02x\n",i
+				chip->oob_poi[i+0],
+				chip->oob_poi[i+1],
+				chip->oob_poi[i+2],
+				chip->oob_poi[i+3]);
+		}
 
+		bad = 0xFF;
+#else
 		bad = chip->oob_poi[chip->badblockpos];
-
+#endif
 		if (likely(chip->badblockbits == 8))
 			res = bad != 0xFF;
 		else
@@ -568,7 +581,11 @@ static int nand_block_markbad_lowlevel(struct nand_chip *chip, loff_t ofs)
 		/* Attempt erase before marking OOB */
 		memset(&einfo, 0, sizeof(einfo));
 		einfo.addr = ofs;
-		einfo.len = 1ULL << chip->phys_erase_shift;
+		/* two plane mode */
+		if (mtd->erasesize > (1ULL << chip->phys_erase_shift))
+			einfo.len = (1ULL << chip->phys_erase_shift) * 2;
+		else
+			einfo.len = 1ULL << chip->phys_erase_shift;
 		nand_erase_nand(chip, &einfo, 0);
 
 		/* Write bad block marker to OOB */
@@ -3401,10 +3418,25 @@ static int nand_read_oob_syndrome(struct nand_chip *chip, int page)
  */
 int nand_write_oob_std(struct nand_chip *chip, int page)
 {
+	int ret;
+	int i;
+	int page_in_blk;
+	int blk_in_plane;
 	struct mtd_info *mtd = nand_to_mtd(chip);
 
-	return nand_prog_page_op(chip, page, mtd->writesize, chip->oob_poi,
-				 mtd->oobsize);
+	page_in_blk = page/2%256;
+	blk_in_plane = page/2/256;
+	ret = nand_prog_page_op(chip, blk_in_plane*2*256, 
+				mtd->writesize/2, chip->oob_poi,
+				 mtd->oobsize/2);
+	if (ret)
+		return ret;
+
+	ret = nand_prog_page_op(chip, (blk_in_plane*2+1)*256, 
+				mtd->writesize/2, chip->oob_poi+mtd->oobsize/2,
+				 mtd->oobsize/2);
+	return ret;
+
 }
 EXPORT_SYMBOL(nand_write_oob_std);
 
@@ -4210,7 +4242,29 @@ out:
  */
 static int nand_erase(struct mtd_info *mtd, struct erase_info *instr)
 {
-	return nand_erase_nand(mtd_to_nand(mtd), instr, 0);
+	int ret;
+	int page;
+	int page_in_blk;
+	int blk_in_plane;
+	struct erase_info instr1,instr2;
+	
+	instr1 = *instr;
+	instr2 = *instr;
+	page = isntr1.addr/0x1000;
+	page_in_blk = page/2%256;
+	blk_in_plane = page/2/256;
+	instr1.addr = blk_in_plane*2*256*0x1000;
+	instr1.len/=2;
+	instr2.addr = (blk_in_plane*2+1)*256*0x1000;
+	instr2.len/=2;
+
+	ret = nand_erase_nand(mtd_to_nand(mtd), &instr1, 0);
+	if (ret)
+		return ret;
+
+	ret = nand_erase_nand(mtd_to_nand(mtd), &instr2, 0);
+	instr->fail_addr = instr2.fail_addr;
+	return ret;
 }
 
 /**
@@ -5760,6 +5814,70 @@ static const struct nand_ops rawnand_ops = {
 	.isbad = rawnand_isbad,
 };
 
+static void test_nand(struct mtd_info *mtd)
+{
+	int ret;
+	char *data;
+	loff_t off;
+	char buf[8];/* max available oob we can set */
+	struct mtd_oob_ops ops = {};
+	struct erase_info e;
+
+	data = kmalloc(0x2000, GFP_KERNEL);
+	if (!data)
+		return;
+
+	/* test oob rw */
+	for (off = 0x1000000; off < 0x2000000; off += 0x200000) {
+		/* fill oob area */
+		buf[0] = 0xff;/* badblock flag */
+		buf[1] = 0xff;
+		buf[2] = 0x02;
+		buf[3] = 0x03;
+		buf[4] = 0x04;
+		buf[5] = 0x05;
+		buf[6] = 0x06;
+		buf[7] = 0x07;
+		ops.mode = MTD_OPS_PLACE_OOB;
+		ops.ooblen = 8; /* write len of oob */
+		ops.oobbuf = buf;
+		ops.datbuf = NULL;
+
+		mtd_write_oob(mtd, off, &ops);
+		
+		memset(buf, 0, 8);
+
+		mtd_read_oob(mtd, off, &ops);
+	}
+
+	/* 0x5a00000 0x6c600000 0x7ae00000 0x9d200000 0xac800000 */
+	/* test bad block */
+	if (mtd_block_isbad(mtd, 0x5a00000))
+		printk("bab block at %lx\n", 0x5a00000);
+	// mtd_block_markbad(mtd, 0x1000000);
+	
+	memset(data, 0, 8192);
+	*data = 0xAA;
+	*(data+1) = 0x55;
+	*(data+4096) = 0xAA;
+	*(data+4097) = 0x55;
+	mtd_write(mtd, 0x1000000, 0x2000, &ret, data);
+	
+	memset(data, 0, 8192);
+	mtd_read(mtd, 0x1000000, 0x2000, &ret, data);
+	if (*(data)!=0xAA &&
+	    *(data+1)!=0x55 &&
+	    *(data+4096)!=0xAA &&
+	    *(data+4097)!=0x55) {
+		printk("rw err at 0x%lx\n", 0x1000000);
+	}
+
+	/* test erase block */
+	e.addr = 0x1000000;
+	e.len = 0x200000;
+	mtd_erase(mtd, &e);
+}
+
 /**
  * nand_scan_tail - Scan for the NAND device
  * @chip: NAND chip object
@@ -5992,6 +6110,12 @@ static int nand_scan_tail(struct nand_chip *chip)
 	if (ret)
 		goto err_nand_manuf_cleanup;
 
+	/* two plane */
+	mtd->writesize *= 2;
+	mtd->oobsize *= 2;
+	mtd->erasesize *= 2;
+	ecc->steps = 4;
+
 	/* Adjust the MTD_CAP_ flags when NAND_ROM is set. */
 	if (chip->options & NAND_ROM)
 		mtd->flags = MTD_CAP_ROM;
@@ -6048,11 +6172,13 @@ static int nand_scan_tail(struct nand_chip *chip)
 	if (chip->options & NAND_SKIP_BBTSCAN)
 		return 0;
 
+#if 0
 	/* Build bad block table */
 	ret = nand_create_bbt(chip);
 	if (ret)
 		goto err_free_secure_regions;
-
+#endif
+	test_nand(mtd);
 	return 0;
 
 err_free_secure_regions:

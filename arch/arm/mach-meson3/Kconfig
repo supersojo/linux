@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menuconfig ARCH_MESON3
+	bool "Amlogic Meson 8726M3 SoCs"
+	depends on ARCH_MULTI_V7
+	select GPIOLIB
+	select GENERIC_IRQ_CHIP
+	select ARM_GLOBAL_TIMER
+	select CACHE_L2X0
+	select HAVE_ARM_SCU if SMP
+	select HAVE_ARM_TWD if SMP
+
+if ARCH_MESON3
+
+# more custom maybe defined here
+config MACH_MESON3
+	bool "Amlogic Meson3 (88726M3) Socs support"
+	default ARCH_MESON3
+endif

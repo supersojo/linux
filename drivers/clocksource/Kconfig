@@ -105,6 +105,12 @@ config MESON6_TIMER
 	help
 	  Enables the support for the Meson6 timer driver.
 
+config MESON3_TIMER
+	bool "Meson 8726m3 timer driver" if COMPILE_TEST
+	select CLKSRC_MMIO
+	help
+	  Enables the support for the Meson 8726m3 timer driver.
+
 config ORION_TIMER
 	bool "Orion timer driver" if COMPILE_TEST
 	depends on ARM

@@ -406,6 +406,14 @@ config MESON_IRQ_GPIO
        help
          Support Meson SoC Family GPIO Interrupt Multiplexer
 
+config MESON_INTC
+	bool "Meson Interrupt Controller"
+	depends on ARCH_MESON3
+	select GENERIC_IRQ_CHIP
+	select IRQ_DOMAIN
+	help
+	  Support for the Meson 8726M3 Interrupt Controller
+
 config GOLDFISH_PIC
        bool "Goldfish programmable interrupt controller"
        depends on MIPS && (GOLDFISH || COMPILE_TEST)

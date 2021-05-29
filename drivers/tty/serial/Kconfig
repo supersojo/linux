@@ -204,13 +204,21 @@ config SERIAL_MESON
 	  This enables the driver for the on-chip UARTs of the Amlogic
 	  MesonX processors.
 
-config SERIAL_MESON_CONSOLE
-	bool "Support for console on meson"
-	depends on SERIAL_MESON
+config SERIAL_MESON3
+	tristate "Meson 8726m3 serial port support"
+	depends on ARCH_MESON3 || COMPILE_TEST
+	select SERIAL_CORE
+	help
+	  This enables the driver for the on-chip UARTs of the Amlogic
+	  Meson 8726m3 processors.
+
+config SERIAL_MESON3_CONSOLE
+	bool "Support for console on meson 8726m3"
+	depends on SERIAL_MESON3
 	select SERIAL_CORE_CONSOLE
 	select SERIAL_EARLYCON
 	help
-	  Say Y here if you wish to use a Amlogic MesonX UART as the
+	  Say Y here if you wish to use a Amlogic Meson3 8726m3 UART as the
 	  system console (the system console is the device which
 	  receives all kernel messages and warnings and which allows
 	  logins in single user mode) as /dev/ttyAMLx.
