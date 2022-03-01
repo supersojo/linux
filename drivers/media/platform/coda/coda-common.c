@@ -43,7 +43,7 @@
 #define CODA_NAME		"coda"
 
 #define CODADX6_MAX_INSTANCES	4
-#define CODA_MAX_FORMATS	4
+#define CODA_MAX_FORMATS	5
 
 #define CODA_ISRAM_SIZE	(2048 * 2)
 
@@ -247,6 +247,7 @@ static const struct coda_video_device coda9_jpeg_encoder = {
 		V4L2_PIX_FMT_YUV420,
 		V4L2_PIX_FMT_YVU420,
 		V4L2_PIX_FMT_YUV422P,
+		V4L2_PIX_FMT_GREY,
 	},
 	.dst_formats = {
 		V4L2_PIX_FMT_JPEG,
@@ -625,6 +626,11 @@ static int coda_try_fmt(struct coda_ctx *ctx, const struct coda_codec *codec,
 		f->fmt.pix.bytesperline = round_up(f->fmt.pix.width, 16);
 		f->fmt.pix.sizeimage = f->fmt.pix.bytesperline *
 					f->fmt.pix.height * 2;
+		break;
+	case V4L2_PIX_FMT_GREY:
+		/* keep 16 pixel alignment of 8-bit pixel data */
+		f->fmt.pix.bytesperline = round_up(f->fmt.pix.width, 16);
+		f->fmt.pix.sizeimage = f->fmt.pix.bytesperline * f->fmt.pix.height;
 		break;
 	case V4L2_PIX_FMT_JPEG:
 	case V4L2_PIX_FMT_H264:
@@ -1537,11 +1543,13 @@ static void coda_pic_run_work(struct work_struct *work)
 
 	if (!wait_for_completion_timeout(&ctx->completion,
 					 msecs_to_jiffies(1000))) {
-		dev_err(dev->dev, "CODA PIC_RUN timeout\n");
+		if (ctx->use_bit) {
+			dev_err(dev->dev, "CODA PIC_RUN timeout\n");
 
-		ctx->hold = true;
+			ctx->hold = true;
 
-		coda_hw_reset(ctx);
+			coda_hw_reset(ctx);
+		}
 
 		if (ctx->ops->run_timeout)
 			ctx->ops->run_timeout(ctx);
@@ -1935,7 +1943,7 @@ int coda_alloc_aux_buf(struct coda_dev *dev, struct coda_aux_buf *buf,
 	if (name && parent) {
 		buf->blob.data = buf->vaddr;
 		buf->blob.size = size;
-		buf->dentry = debugfs_create_blob(name, 0644, parent,
+		buf->dentry = debugfs_create_blob(name, 0444, parent,
 						  &buf->blob);
 	}
 
@@ -2660,7 +2668,7 @@ static int coda_open(struct file *file)
 	ctx->use_vdoa = false;
 
 	/* Power up and upload firmware if necessary */
-	ret = pm_runtime_get_sync(dev->dev);
+	ret = pm_runtime_resume_and_get(dev->dev);
 	if (ret < 0) {
 		v4l2_err(&dev->v4l2_dev, "failed to power up: %d\n", ret);
 		goto err_pm_get;
@@ -2668,7 +2676,7 @@ static int coda_open(struct file *file)
 
 	ret = clk_prepare_enable(dev->clk_per);
 	if (ret)
-		goto err_pm_get;
+		goto err_clk_enable;
 
 	ret = clk_prepare_enable(dev->clk_ahb);
 	if (ret)
@@ -2707,8 +2715,9 @@ err_ctx_init:
 	clk_disable_unprepare(dev->clk_ahb);
 err_clk_ahb:
 	clk_disable_unprepare(dev->clk_per);
-err_pm_get:
+err_clk_enable:
 	pm_runtime_put_sync(dev->dev);
+err_pm_get:
 	v4l2_fh_del(&ctx->fh);
 	v4l2_fh_exit(&ctx->fh);
 err_coda_name_init:
@@ -3232,7 +3241,7 @@ static int coda_probe(struct platform_device *pdev)
 		memset(dev->iram.vaddr, 0, dev->iram.size);
 		dev->iram.blob.data = dev->iram.vaddr;
 		dev->iram.blob.size = dev->iram.size;
-		dev->iram.dentry = debugfs_create_blob("iram", 0644,
+		dev->iram.dentry = debugfs_create_blob("iram", 0444,
 						       dev->debugfs_root,
 						       &dev->iram.blob);
 	}

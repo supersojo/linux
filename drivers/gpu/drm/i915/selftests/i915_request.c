@@ -209,6 +209,10 @@ static int igt_request_rewind(void *arg)
 	int err = -EINVAL;
 
 	ctx[0] = mock_context(i915, "A");
+	if (!ctx[0]) {
+		err = -ENOMEM;
+		goto err_ctx_0;
+	}
 
 	ce = i915_gem_context_get_engine(ctx[0], RCS0);
 	GEM_BUG_ON(IS_ERR(ce));
@@ -223,6 +227,10 @@ static int igt_request_rewind(void *arg)
 	i915_request_add(request);
 
 	ctx[1] = mock_context(i915, "B");
+	if (!ctx[1]) {
+		err = -ENOMEM;
+		goto err_ctx_1;
+	}
 
 	ce = i915_gem_context_get_engine(ctx[1], RCS0);
 	GEM_BUG_ON(IS_ERR(ce));
@@ -261,9 +269,11 @@ err:
 	i915_request_put(vip);
 err_context_1:
 	mock_context_close(ctx[1]);
+err_ctx_1:
 	i915_request_put(request);
 err_context_0:
 	mock_context_close(ctx[0]);
+err_ctx_0:
 	mock_device_flush(i915);
 	return err;
 }
@@ -831,7 +841,7 @@ static struct i915_vma *empty_batch(struct drm_i915_private *i915)
 	__i915_gem_object_flush_map(obj, 0, 64);
 	i915_gem_object_unpin_map(obj);
 
-	intel_gt_chipset_flush(&i915->gt);
+	intel_gt_chipset_flush(to_gt(i915));
 
 	vma = i915_vma_instance(obj, &i915->ggtt.vm, NULL);
 	if (IS_ERR(vma)) {
@@ -963,7 +973,7 @@ out_batch:
 static struct i915_vma *recursive_batch(struct drm_i915_private *i915)
 {
 	struct drm_i915_gem_object *obj;
-	const int gen = INTEL_GEN(i915);
+	const int ver = GRAPHICS_VER(i915);
 	struct i915_vma *vma;
 	u32 *cmd;
 	int err;
@@ -972,7 +982,7 @@ static struct i915_vma *recursive_batch(struct drm_i915_private *i915)
 	if (IS_ERR(obj))
 		return ERR_CAST(obj);
 
-	vma = i915_vma_instance(obj, i915->gt.vm, NULL);
+	vma = i915_vma_instance(obj, to_gt(i915)->vm, NULL);
 	if (IS_ERR(vma)) {
 		err = PTR_ERR(vma);
 		goto err;
@@ -988,11 +998,11 @@ static struct i915_vma *recursive_batch(struct drm_i915_private *i915)
 		goto err;
 	}
 
-	if (gen >= 8) {
+	if (ver >= 8) {
 		*cmd++ = MI_BATCH_BUFFER_START | 1 << 8 | 1;
 		*cmd++ = lower_32_bits(vma->node.start);
 		*cmd++ = upper_32_bits(vma->node.start);
-	} else if (gen >= 6) {
+	} else if (ver >= 6) {
 		*cmd++ = MI_BATCH_BUFFER_START | 1 << 8;
 		*cmd++ = lower_32_bits(vma->node.start);
 	} else {
@@ -1004,7 +1014,7 @@ static struct i915_vma *recursive_batch(struct drm_i915_private *i915)
 	__i915_gem_object_flush_map(obj, 0, 64);
 	i915_gem_object_unpin_map(obj);
 
-	intel_gt_chipset_flush(&i915->gt);
+	intel_gt_chipset_flush(to_gt(i915));
 
 	return vma;
 
@@ -1313,7 +1323,7 @@ static int __live_parallel_engine1(void *arg)
 		i915_request_add(rq);
 
 		err = 0;
-		if (i915_request_wait(rq, 0, HZ / 5) < 0)
+		if (i915_request_wait(rq, 0, HZ) < 0)
 			err = -ETIME;
 		i915_request_put(rq);
 		if (err)
@@ -1419,7 +1429,7 @@ static int __live_parallel_spin(void *arg)
 	}
 	igt_spinner_end(&spin);
 
-	if (err == 0 && i915_request_wait(rq, 0, HZ / 5) < 0)
+	if (err == 0 && i915_request_wait(rq, 0, HZ) < 0)
 		err = -EIO;
 	i915_request_put(rq);
 
@@ -1592,8 +1602,8 @@ static int live_breadcrumbs_smoketest(void *arg)
 
 	for (n = 0; n < smoke[0].ncontexts; n++) {
 		smoke[0].contexts[n] = live_context(i915, file);
-		if (!smoke[0].contexts[n]) {
-			ret = -ENOMEM;
+		if (IS_ERR(smoke[0].contexts[n])) {
+			ret = PTR_ERR(smoke[0].contexts[n]);
 			goto out_contexts;
 		}
 	}
@@ -1690,7 +1700,7 @@ int i915_request_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_breadcrumbs_smoketest),
 	};
 
-	if (intel_gt_is_wedged(&i915->gt))
+	if (intel_gt_is_wedged(to_gt(i915)))
 		return 0;
 
 	return i915_subtests(tests, i915);
@@ -2482,7 +2492,7 @@ static int perf_request_latency(void *arg)
 	struct pm_qos_request qos;
 	int err = 0;
 
-	if (INTEL_GEN(i915) < 8) /* per-engine CS timestamp, semaphores */
+	if (GRAPHICS_VER(i915) < 8) /* per-engine CS timestamp, semaphores */
 		return 0;
 
 	cpu_latency_qos_add_request(&qos, 0); /* disable cstates */
@@ -2805,7 +2815,7 @@ static int p_sync0(void *arg)
 		i915_request_add(rq);
 
 		err = 0;
-		if (i915_request_wait(rq, 0, HZ / 5) < 0)
+		if (i915_request_wait(rq, 0, HZ) < 0)
 			err = -ETIME;
 		i915_request_put(rq);
 		if (err)
@@ -2876,7 +2886,7 @@ static int p_sync1(void *arg)
 		i915_request_add(rq);
 
 		err = 0;
-		if (prev && i915_request_wait(prev, 0, HZ / 5) < 0)
+		if (prev && i915_request_wait(prev, 0, HZ) < 0)
 			err = -ETIME;
 		i915_request_put(prev);
 		prev = rq;
@@ -3081,7 +3091,7 @@ int i915_request_perf_selftests(struct drm_i915_private *i915)
 		SUBTEST(perf_parallel_engines),
 	};
 
-	if (intel_gt_is_wedged(&i915->gt))
+	if (intel_gt_is_wedged(to_gt(i915)))
 		return 0;
 
 	return i915_subtests(tests, i915);

@@ -139,13 +139,6 @@ struct cafe_camera {
  */
 #define CAFE_SMBUS_TIMEOUT (HZ)  /* generous */
 
-static inline struct cafe_camera *to_cam(struct v4l2_device *dev)
-{
-	struct mcam_camera *m = container_of(dev, struct mcam_camera, v4l2_dev);
-	return container_of(m, struct cafe_camera, mcam);
-}
-
-
 static int cafe_smbus_write_done(struct mcam_camera *mcam)
 {
 	unsigned long flags;
@@ -486,6 +479,7 @@ static int cafe_pci_probe(struct pci_dev *pdev,
 	struct cafe_camera *cam;
 	struct mcam_camera *mcam;
 	struct v4l2_async_subdev *asd;
+	struct i2c_client *i2c_dev;
 
 	/*
 	 * Start putting together one of our big camera structures.
@@ -543,12 +537,11 @@ static int cafe_pci_probe(struct pci_dev *pdev,
 	if (ret)
 		goto out_pdown;
 
-	v4l2_async_notifier_init(&mcam->notifier);
+	v4l2_async_nf_init(&mcam->notifier);
 
-	asd = v4l2_async_notifier_add_i2c_subdev(&mcam->notifier,
-					i2c_adapter_id(cam->i2c_adapter),
-					ov7670_info.addr,
-					struct v4l2_async_subdev);
+	asd = v4l2_async_nf_add_i2c(&mcam->notifier,
+				    i2c_adapter_id(cam->i2c_adapter),
+				    ov7670_info.addr, struct v4l2_async_subdev);
 	if (IS_ERR(asd)) {
 		ret = PTR_ERR(asd);
 		goto out_smbus_shutdown;
@@ -561,11 +554,16 @@ static int cafe_pci_probe(struct pci_dev *pdev,
 	clkdev_create(mcam->mclk, "xclk", "%d-%04x",
 		i2c_adapter_id(cam->i2c_adapter), ov7670_info.addr);
 
-	if (!IS_ERR(i2c_new_client_device(cam->i2c_adapter, &ov7670_info))) {
-		cam->registered = 1;
-		return 0;
+	i2c_dev = i2c_new_client_device(cam->i2c_adapter, &ov7670_info);
+	if (IS_ERR(i2c_dev)) {
+		ret = PTR_ERR(i2c_dev);
+		goto out_mccic_shutdown;
 	}
 
+	cam->registered = 1;
+	return 0;
+
+out_mccic_shutdown:
 	mccic_shutdown(mcam);
 out_smbus_shutdown:
 	cafe_smbus_shutdown(cam);

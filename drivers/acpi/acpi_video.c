@@ -540,6 +540,15 @@ static const struct dmi_system_id video_dmi_table[] = {
 		DMI_MATCH(DMI_PRODUCT_NAME, "Vostro V131"),
 		},
 	},
+	{
+	 .callback = video_set_report_key_events,
+	 .driver_data = (void *)((uintptr_t)REPORT_BRIGHTNESS_KEY_EVENTS),
+	 .ident = "Dell Vostro 3350",
+	 .matches = {
+		DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+		DMI_MATCH(DMI_PRODUCT_NAME, "Vostro 3350"),
+		},
+	},
 	/*
 	 * Some machines change the brightness themselves when a brightness
 	 * hotkey gets pressed, despite us telling them not to. In this case
@@ -1619,8 +1628,6 @@ static void acpi_video_bus_notify(struct acpi_device *device, u32 event)
 		input_report_key(input, keycode, 0);
 		input_sync(input);
 	}
-
-	return;
 }
 
 static void brightness_switch_event(struct acpi_video_device *video_device,
@@ -1690,8 +1697,6 @@ static void acpi_video_device_notify(acpi_handle handle, u32 event, void *data)
 		input_report_key(input, keycode, 0);
 		input_sync(input);
 	}
-
-	return;
 }
 
 static int acpi_video_resume(struct notifier_block *nb,
@@ -1728,13 +1733,12 @@ acpi_video_bus_match(acpi_handle handle, u32 level, void *context,
 {
 	struct acpi_device *device = context;
 	struct acpi_device *sibling;
-	int result;
 
 	if (handle == device->handle)
 		return AE_CTRL_TERMINATE;
 
-	result = acpi_bus_get_device(handle, &sibling);
-	if (result)
+	sibling = acpi_fetch_acpi_dev(handle);
+	if (!sibling)
 		return AE_OK;
 
 	if (!strcmp(acpi_device_name(sibling), ACPI_VIDEO_BUS_NAME))
@@ -2308,8 +2312,6 @@ static void __exit acpi_video_exit(void)
 {
 	acpi_video_detect_exit();
 	acpi_video_unregister();
-
-	return;
 }
 
 module_init(acpi_video_init);

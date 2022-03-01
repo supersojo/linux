@@ -77,6 +77,42 @@ static const struct software_node ssam_node_bas_dtx = {
 	.parent = &ssam_node_root,
 };
 
+/* HID keyboard (TID1). */
+static const struct software_node ssam_node_hid_tid1_keyboard = {
+	.name = "ssam:01:15:01:01:00",
+	.parent = &ssam_node_root,
+};
+
+/* HID pen stash (TID1; pen taken / stashed away evens). */
+static const struct software_node ssam_node_hid_tid1_penstash = {
+	.name = "ssam:01:15:01:02:00",
+	.parent = &ssam_node_root,
+};
+
+/* HID touchpad (TID1). */
+static const struct software_node ssam_node_hid_tid1_touchpad = {
+	.name = "ssam:01:15:01:03:00",
+	.parent = &ssam_node_root,
+};
+
+/* HID device instance 6 (TID1, unknown HID device). */
+static const struct software_node ssam_node_hid_tid1_iid6 = {
+	.name = "ssam:01:15:01:06:00",
+	.parent = &ssam_node_root,
+};
+
+/* HID device instance 7 (TID1, unknown HID device). */
+static const struct software_node ssam_node_hid_tid1_iid7 = {
+	.name = "ssam:01:15:01:07:00",
+	.parent = &ssam_node_root,
+};
+
+/* HID system controls (TID1). */
+static const struct software_node ssam_node_hid_tid1_sysctrl = {
+	.name = "ssam:01:15:01:08:00",
+	.parent = &ssam_node_root,
+};
+
 /* HID keyboard. */
 static const struct software_node ssam_node_hid_main_keyboard = {
 	.name = "ssam:01:15:02:01:00",
@@ -119,8 +155,13 @@ static const struct software_node ssam_node_hid_base_iid6 = {
 	.parent = &ssam_node_hub_base,
 };
 
-/* Devices for Surface Book 2. */
-static const struct software_node *ssam_node_group_sb2[] = {
+/*
+ * Devices for 5th- and 6th-generations models:
+ * - Surface Book 2,
+ * - Surface Laptop 1 and 2,
+ * - Surface Pro 5 and 6.
+ */
+static const struct software_node *ssam_node_group_gen5[] = {
 	&ssam_node_root,
 	&ssam_node_tmp_pprof,
 	NULL,
@@ -142,21 +183,7 @@ static const struct software_node *ssam_node_group_sb3[] = {
 	NULL,
 };
 
-/* Devices for Surface Laptop 1. */
-static const struct software_node *ssam_node_group_sl1[] = {
-	&ssam_node_root,
-	&ssam_node_tmp_pprof,
-	NULL,
-};
-
-/* Devices for Surface Laptop 2. */
-static const struct software_node *ssam_node_group_sl2[] = {
-	&ssam_node_root,
-	&ssam_node_tmp_pprof,
-	NULL,
-};
-
-/* Devices for Surface Laptop 3. */
+/* Devices for Surface Laptop 3 and 4. */
 static const struct software_node *ssam_node_group_sl3[] = {
 	&ssam_node_root,
 	&ssam_node_bat_ac,
@@ -165,6 +192,21 @@ static const struct software_node *ssam_node_group_sl3[] = {
 	&ssam_node_hid_main_keyboard,
 	&ssam_node_hid_main_touchpad,
 	&ssam_node_hid_main_iid5,
+	NULL,
+};
+
+/* Devices for Surface Laptop Studio. */
+static const struct software_node *ssam_node_group_sls[] = {
+	&ssam_node_root,
+	&ssam_node_bat_ac,
+	&ssam_node_bat_main,
+	&ssam_node_tmp_pprof,
+	&ssam_node_hid_tid1_keyboard,
+	&ssam_node_hid_tid1_penstash,
+	&ssam_node_hid_tid1_touchpad,
+	&ssam_node_hid_tid1_iid6,
+	&ssam_node_hid_tid1_iid7,
+	&ssam_node_hid_tid1_sysctrl,
 	NULL,
 };
 
@@ -177,26 +219,21 @@ static const struct software_node *ssam_node_group_slg1[] = {
 	NULL,
 };
 
-/* Devices for Surface Pro 5. */
-static const struct software_node *ssam_node_group_sp5[] = {
-	&ssam_node_root,
-	&ssam_node_tmp_pprof,
-	NULL,
-};
-
-/* Devices for Surface Pro 6. */
-static const struct software_node *ssam_node_group_sp6[] = {
-	&ssam_node_root,
-	&ssam_node_tmp_pprof,
-	NULL,
-};
-
 /* Devices for Surface Pro 7 and Surface Pro 7+. */
 static const struct software_node *ssam_node_group_sp7[] = {
 	&ssam_node_root,
 	&ssam_node_bat_ac,
 	&ssam_node_bat_main,
 	&ssam_node_tmp_pprof,
+	NULL,
+};
+
+static const struct software_node *ssam_node_group_sp8[] = {
+	&ssam_node_root,
+	&ssam_node_bat_ac,
+	&ssam_node_bat_main,
+	&ssam_node_tmp_pprof,
+	/* TODO: Add support for keyboard cover. */
 	NULL,
 };
 
@@ -219,20 +256,6 @@ static int ssam_uid_from_string(const char *str, struct ssam_device_uid *uid)
 	uid->function = fn;
 
 	return 0;
-}
-
-static int ssam_hub_remove_devices_fn(struct device *dev, void *data)
-{
-	if (!is_ssam_device(dev))
-		return 0;
-
-	ssam_device_remove(to_ssam_device(dev));
-	return 0;
-}
-
-static void ssam_hub_remove_devices(struct device *parent)
-{
-	device_for_each_child_reverse(parent, NULL, ssam_hub_remove_devices_fn);
 }
 
 static int ssam_hub_add_device(struct device *parent, struct ssam_controller *ctrl,
@@ -260,8 +283,8 @@ static int ssam_hub_add_device(struct device *parent, struct ssam_controller *ct
 	return status;
 }
 
-static int ssam_hub_add_devices(struct device *parent, struct ssam_controller *ctrl,
-				struct fwnode_handle *node)
+static int ssam_hub_register_clients(struct device *parent, struct ssam_controller *ctrl,
+				     struct fwnode_handle *node)
 {
 	struct fwnode_handle *child;
 	int status;
@@ -280,7 +303,7 @@ static int ssam_hub_add_devices(struct device *parent, struct ssam_controller *c
 
 	return 0;
 err:
-	ssam_hub_remove_devices(parent);
+	ssam_remove_clients(parent);
 	return status;
 }
 
@@ -375,9 +398,9 @@ static void ssam_base_hub_update_workfn(struct work_struct *work)
 	hub->state = state;
 
 	if (hub->state == SSAM_BASE_HUB_CONNECTED)
-		status = ssam_hub_add_devices(&hub->sdev->dev, hub->sdev->ctrl, node);
+		status = ssam_hub_register_clients(&hub->sdev->dev, hub->sdev->ctrl, node);
 	else
-		ssam_hub_remove_devices(&hub->sdev->dev);
+		ssam_remove_clients(&hub->sdev->dev);
 
 	if (status)
 		dev_err(&hub->sdev->dev, "failed to update base-hub devices: %d\n", status);
@@ -459,7 +482,7 @@ static int ssam_base_hub_probe(struct ssam_device *sdev)
 err:
 	ssam_notifier_unregister(sdev->ctrl, &hub->notif);
 	cancel_delayed_work_sync(&hub->update_work);
-	ssam_hub_remove_devices(&sdev->dev);
+	ssam_remove_clients(&sdev->dev);
 	return status;
 }
 
@@ -471,7 +494,7 @@ static void ssam_base_hub_remove(struct ssam_device *sdev)
 
 	ssam_notifier_unregister(sdev->ctrl, &hub->notif);
 	cancel_delayed_work_sync(&hub->update_work);
-	ssam_hub_remove_devices(&sdev->dev);
+	ssam_remove_clients(&sdev->dev);
 }
 
 static const struct ssam_device_id ssam_base_hub_match[] = {
@@ -495,10 +518,10 @@ static struct ssam_device_driver ssam_base_hub_driver = {
 
 static const struct acpi_device_id ssam_platform_hub_match[] = {
 	/* Surface Pro 4, 5, and 6 (OMBR < 0x10) */
-	{ "MSHW0081", (unsigned long)ssam_node_group_sp5 },
+	{ "MSHW0081", (unsigned long)ssam_node_group_gen5 },
 
 	/* Surface Pro 6 (OMBR >= 0x10) */
-	{ "MSHW0111", (unsigned long)ssam_node_group_sp6 },
+	{ "MSHW0111", (unsigned long)ssam_node_group_gen5 },
 
 	/* Surface Pro 7 */
 	{ "MSHW0116", (unsigned long)ssam_node_group_sp7 },
@@ -506,26 +529,35 @@ static const struct acpi_device_id ssam_platform_hub_match[] = {
 	/* Surface Pro 7+ */
 	{ "MSHW0119", (unsigned long)ssam_node_group_sp7 },
 
+	/* Surface Pro 8 */
+	{ "MSHW0263", (unsigned long)ssam_node_group_sp8 },
+
 	/* Surface Book 2 */
-	{ "MSHW0107", (unsigned long)ssam_node_group_sb2 },
+	{ "MSHW0107", (unsigned long)ssam_node_group_gen5 },
 
 	/* Surface Book 3 */
 	{ "MSHW0117", (unsigned long)ssam_node_group_sb3 },
 
 	/* Surface Laptop 1 */
-	{ "MSHW0086", (unsigned long)ssam_node_group_sl1 },
+	{ "MSHW0086", (unsigned long)ssam_node_group_gen5 },
 
 	/* Surface Laptop 2 */
-	{ "MSHW0112", (unsigned long)ssam_node_group_sl2 },
+	{ "MSHW0112", (unsigned long)ssam_node_group_gen5 },
 
 	/* Surface Laptop 3 (13", Intel) */
 	{ "MSHW0114", (unsigned long)ssam_node_group_sl3 },
 
-	/* Surface Laptop 3 (15", AMD) */
+	/* Surface Laptop 3 (15", AMD) and 4 (15", AMD) */
 	{ "MSHW0110", (unsigned long)ssam_node_group_sl3 },
+
+	/* Surface Laptop 4 (13", Intel) */
+	{ "MSHW0250", (unsigned long)ssam_node_group_sl3 },
 
 	/* Surface Laptop Go 1 */
 	{ "MSHW0118", (unsigned long)ssam_node_group_slg1 },
+
+	/* Surface Laptop Studio */
+	{ "MSHW0123", (unsigned long)ssam_node_group_sls },
 
 	{ },
 };
@@ -565,7 +597,7 @@ static int ssam_platform_hub_probe(struct platform_device *pdev)
 
 	set_secondary_fwnode(&pdev->dev, root);
 
-	status = ssam_hub_add_devices(&pdev->dev, ctrl, root);
+	status = ssam_hub_register_clients(&pdev->dev, ctrl, root);
 	if (status) {
 		set_secondary_fwnode(&pdev->dev, NULL);
 		software_node_unregister_node_group(nodes);
@@ -579,7 +611,7 @@ static int ssam_platform_hub_remove(struct platform_device *pdev)
 {
 	const struct software_node **nodes = platform_get_drvdata(pdev);
 
-	ssam_hub_remove_devices(&pdev->dev);
+	ssam_remove_clients(&pdev->dev);
 	set_secondary_fwnode(&pdev->dev, NULL);
 	software_node_unregister_node_group(nodes);
 	return 0;

@@ -271,8 +271,7 @@ nfs_page_set_headlock(struct nfs_page *req)
 void
 nfs_page_clear_headlock(struct nfs_page *req)
 {
-	smp_mb__before_atomic();
-	clear_bit(PG_HEADLOCK, &req->wb_flags);
+	clear_bit_unlock(PG_HEADLOCK, &req->wb_flags);
 	smp_mb__after_atomic();
 	if (!test_bit(PG_CONTENDED1, &req->wb_flags))
 		return;
@@ -525,12 +524,7 @@ nfs_create_subreq(struct nfs_page *req,
  */
 void nfs_unlock_request(struct nfs_page *req)
 {
-	if (!NFS_WBACK_BUSY(req)) {
-		printk(KERN_ERR "NFS: Invalid unlock attempted\n");
-		BUG();
-	}
-	smp_mb__before_atomic();
-	clear_bit(PG_BUSY, &req->wb_flags);
+	clear_bit_unlock(PG_BUSY, &req->wb_flags);
 	smp_mb__after_atomic();
 	if (!test_bit(PG_CONTENDED2, &req->wb_flags))
 		return;
@@ -870,9 +864,6 @@ static void nfs_pgio_result(struct rpc_task *task, void *calldata)
 	struct nfs_pgio_header *hdr = calldata;
 	struct inode *inode = hdr->inode;
 
-	dprintk("NFS: %s: %5u, (status %d)\n", __func__,
-		task->tk_pid, task->tk_status);
-
 	if (hdr->rw_ops->rw_done(task, hdr, inode) != 0)
 		return;
 	if (task->tk_status < 0)
@@ -954,6 +945,7 @@ static int nfs_generic_pg_pgios(struct nfs_pageio_descriptor *desc)
 {
 	struct nfs_pgio_header *hdr;
 	int ret;
+	unsigned short task_flags = 0;
 
 	hdr = nfs_pgio_header_alloc(desc->pg_rw_ops);
 	if (!hdr) {
@@ -962,14 +954,17 @@ static int nfs_generic_pg_pgios(struct nfs_pageio_descriptor *desc)
 	}
 	nfs_pgheader_init(desc, hdr, nfs_pgio_header_free);
 	ret = nfs_generic_pgio(desc, hdr);
-	if (ret == 0)
+	if (ret == 0) {
+		if (NFS_SERVER(hdr->inode)->nfs_client->cl_minorversion)
+			task_flags = RPC_TASK_MOVEABLE;
 		ret = nfs_initiate_pgio(NFS_CLIENT(hdr->inode),
 					hdr,
 					hdr->cred,
 					NFS_PROTO(hdr->inode),
 					desc->pg_rpc_callops,
 					desc->pg_ioflags,
-					RPC_TASK_CRED_NOREF);
+					RPC_TASK_CRED_NOREF | task_flags);
+	}
 	return ret;
 }
 
@@ -1094,15 +1089,16 @@ nfs_pageio_do_add_request(struct nfs_pageio_descriptor *desc,
 	struct nfs_page *prev = NULL;
 	unsigned int size;
 
-	if (mirror->pg_count != 0) {
-		prev = nfs_list_entry(mirror->pg_list.prev);
-	} else {
+	if (list_empty(&mirror->pg_list)) {
 		if (desc->pg_ops->pg_init)
 			desc->pg_ops->pg_init(desc, req);
 		if (desc->pg_error < 0)
 			return 0;
 		mirror->pg_base = req->wb_pgbase;
-	}
+		mirror->pg_count = 0;
+		mirror->pg_recoalesce = 0;
+	} else
+		prev = nfs_list_entry(mirror->pg_list.prev);
 
 	if (desc->pg_maxretrans && req->wb_nio > desc->pg_maxretrans) {
 		if (NFS_SERVER(desc->pg_inode)->flags & NFS_MOUNT_SOFTERR)
@@ -1127,17 +1123,12 @@ static void nfs_pageio_doio(struct nfs_pageio_descriptor *desc)
 {
 	struct nfs_pgio_mirror *mirror = nfs_pgio_current_mirror(desc);
 
-
 	if (!list_empty(&mirror->pg_list)) {
 		int error = desc->pg_ops->pg_doio(desc);
 		if (error < 0)
 			desc->pg_error = error;
-		else
+		if (list_empty(&mirror->pg_list))
 			mirror->pg_bytes_written += mirror->pg_count;
-	}
-	if (list_empty(&mirror->pg_list)) {
-		mirror->pg_count = 0;
-		mirror->pg_base = 0;
 	}
 }
 
@@ -1227,10 +1218,6 @@ static int nfs_do_recoalesce(struct nfs_pageio_descriptor *desc)
 
 	do {
 		list_splice_init(&mirror->pg_list, &head);
-		mirror->pg_bytes_written -= mirror->pg_count;
-		mirror->pg_count = 0;
-		mirror->pg_base = 0;
-		mirror->pg_recoalesce = 0;
 
 		while (!list_empty(&head)) {
 			struct nfs_page *req;

@@ -187,14 +187,14 @@ static int jpeg_v2_5_hw_init(void *handle)
 static int jpeg_v2_5_hw_fini(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-	struct amdgpu_ring *ring;
 	int i;
+
+	cancel_delayed_work_sync(&adev->vcn.idle_work);
 
 	for (i = 0; i < adev->jpeg.num_jpeg_inst; ++i) {
 		if (adev->jpeg.harvest_config & (1 << i))
 			continue;
 
-		ring = &adev->jpeg.inst[i].ring_dec;
 		if (adev->jpeg.cur_state != AMD_PG_STATE_GATE &&
 		      RREG32_SOC15(JPEG, i, mmUVD_JRBC_STATUS))
 			jpeg_v2_5_set_powergating_state(adev, AMD_PG_STATE_GATE);
@@ -423,6 +423,42 @@ static void jpeg_v2_5_dec_ring_set_wptr(struct amdgpu_ring *ring)
 	}
 }
 
+/**
+ * jpeg_v2_6_dec_ring_insert_start - insert a start command
+ *
+ * @ring: amdgpu_ring pointer
+ *
+ * Write a start command to the ring.
+ */
+static void jpeg_v2_6_dec_ring_insert_start(struct amdgpu_ring *ring)
+{
+	amdgpu_ring_write(ring, PACKETJ(mmUVD_JRBC_EXTERNAL_REG_INTERNAL_OFFSET,
+		0, 0, PACKETJ_TYPE0));
+	amdgpu_ring_write(ring, 0x6aa04); /* PCTL0_MMHUB_DEEPSLEEP_IB */
+
+	amdgpu_ring_write(ring, PACKETJ(JRBC_DEC_EXTERNAL_REG_WRITE_ADDR,
+		0, 0, PACKETJ_TYPE0));
+	amdgpu_ring_write(ring, 0x80000000 | (1 << (ring->me * 2 + 14)));
+}
+
+/**
+ * jpeg_v2_6_dec_ring_insert_end - insert a end command
+ *
+ * @ring: amdgpu_ring pointer
+ *
+ * Write a end command to the ring.
+ */
+static void jpeg_v2_6_dec_ring_insert_end(struct amdgpu_ring *ring)
+{
+	amdgpu_ring_write(ring, PACKETJ(mmUVD_JRBC_EXTERNAL_REG_INTERNAL_OFFSET,
+		0, 0, PACKETJ_TYPE0));
+	amdgpu_ring_write(ring, 0x6aa04); /* PCTL0_MMHUB_DEEPSLEEP_IB */
+
+	amdgpu_ring_write(ring, PACKETJ(JRBC_DEC_EXTERNAL_REG_WRITE_ADDR,
+		0, 0, PACKETJ_TYPE0));
+	amdgpu_ring_write(ring, (1 << (ring->me * 2 + 14)));
+}
+
 static bool jpeg_v2_5_is_idle(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
@@ -633,8 +669,8 @@ static const struct amdgpu_ring_funcs jpeg_v2_6_dec_ring_vm_funcs = {
 	.test_ring = amdgpu_jpeg_dec_ring_test_ring,
 	.test_ib = amdgpu_jpeg_dec_ring_test_ib,
 	.insert_nop = jpeg_v2_0_dec_ring_nop,
-	.insert_start = jpeg_v2_0_dec_ring_insert_start,
-	.insert_end = jpeg_v2_0_dec_ring_insert_end,
+	.insert_start = jpeg_v2_6_dec_ring_insert_start,
+	.insert_end = jpeg_v2_6_dec_ring_insert_end,
 	.pad_ib = amdgpu_ring_generic_pad_ib,
 	.begin_use = amdgpu_jpeg_ring_begin_use,
 	.end_use = amdgpu_jpeg_ring_end_use,

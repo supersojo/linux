@@ -265,8 +265,11 @@ int irq_startup(struct irq_desc *desc, bool resend, bool force)
 	} else {
 		switch (__irq_startup_managed(desc, aff, force)) {
 		case IRQ_STARTUP_NORMAL:
+			if (d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP)
+				irq_setup_affinity(desc);
 			ret = __irq_startup(desc);
-			irq_setup_affinity(desc);
+			if (!(d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP))
+				irq_setup_affinity(desc);
 			break;
 		case IRQ_STARTUP_MANAGED:
 			irq_do_set_affinity(d, aff, false);
@@ -481,7 +484,7 @@ void handle_nested_irq(unsigned int irq)
 	for_each_action_of_desc(desc, action)
 		action_ret |= action->thread_fn(action->irq, action->dev_id);
 
-	if (!noirqdebug)
+	if (!irq_settings_no_debug(desc))
 		note_interrupt(desc, action_ret);
 
 	raw_spin_lock_irq(&desc->lock);
@@ -572,8 +575,6 @@ EXPORT_SYMBOL_GPL(handle_simple_irq);
  */
 void handle_untracked_irq(struct irq_desc *desc)
 {
-	unsigned int flags = 0;
-
 	raw_spin_lock(&desc->lock);
 
 	if (!irq_may_run(desc))
@@ -590,7 +591,7 @@ void handle_untracked_irq(struct irq_desc *desc)
 	irqd_set(&desc->irq_data, IRQD_IRQ_INPROGRESS);
 	raw_spin_unlock(&desc->lock);
 
-	__handle_irq_event_percpu(desc, &flags);
+	__handle_irq_event_percpu(desc);
 
 	raw_spin_lock(&desc->lock);
 	irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
@@ -1119,6 +1120,7 @@ void irq_modify_status(unsigned int irq, unsigned long clr, unsigned long set)
 }
 EXPORT_SYMBOL_GPL(irq_modify_status);
 
+#ifdef CONFIG_DEPRECATED_IRQ_CPU_ONOFFLINE
 /**
  *	irq_cpu_online - Invoke all irq_cpu_online functions.
  *
@@ -1178,6 +1180,7 @@ void irq_cpu_offline(void)
 		raw_spin_unlock_irqrestore(&desc->lock, flags);
 	}
 }
+#endif
 
 #ifdef	CONFIG_IRQ_DOMAIN_HIERARCHY
 

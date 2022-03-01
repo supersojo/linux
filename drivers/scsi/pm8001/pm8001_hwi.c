@@ -42,6 +42,7 @@
  #include "pm8001_hwi.h"
  #include "pm8001_chips.h"
  #include "pm8001_ctl.h"
+ #include "pm80xx_tracepoints.h"
 
 /**
  * read_main_config_table - read the configure table and save it.
@@ -384,7 +385,7 @@ static void update_outbnd_queue_table(struct pm8001_hba_info *pm8001_ha,
 
 /**
  * pm8001_bar4_shift - function is called to shift BAR base address
- * @pm8001_ha : our hba card infomation
+ * @pm8001_ha : our hba card information
  * @shiftValue : shifting value in memory bar.
  */
 int pm8001_bar4_shift(struct pm8001_hba_info *pm8001_ha, u32 shiftValue)
@@ -1151,7 +1152,7 @@ static void pm8001_hw_chip_rst(struct pm8001_hba_info *pm8001_ha)
 }
 
 /**
- * pm8001_chip_iounmap - which maped when initialized.
+ * pm8001_chip_iounmap - which mapped when initialized.
  * @pm8001_ha: our hba card information
  */
 void pm8001_chip_iounmap(struct pm8001_hba_info *pm8001_ha)
@@ -1187,10 +1188,10 @@ pm8001_chip_intx_interrupt_enable(struct pm8001_hba_info *pm8001_ha)
 	pm8001_cw32(pm8001_ha, 0, MSGU_ODCR, ODCR_CLEAR_ALL);
 }
 
- /**
-  * pm8001_chip_intx_interrupt_disable- disable PM8001 chip interrupt
-  * @pm8001_ha: our hba card information
-  */
+/**
+ * pm8001_chip_intx_interrupt_disable - disable PM8001 chip interrupt
+ * @pm8001_ha: our hba card information
+ */
 static void
 pm8001_chip_intx_interrupt_disable(struct pm8001_hba_info *pm8001_ha)
 {
@@ -1323,9 +1324,15 @@ int pm8001_mpi_build_cmd(struct pm8001_hba_info *pm8001_ha,
 	void *pMessage;
 	unsigned long flags;
 	int q_index = circularQ - pm8001_ha->inbnd_q_tbl;
-	int rv = -1;
+	int rv;
+	u32 htag = le32_to_cpu(*(__le32 *)payload);
 
-	WARN_ON(q_index >= PM8001_MAX_INB_NUM);
+	trace_pm80xx_mpi_build_cmd(pm8001_ha->id, opCode, htag, q_index,
+		circularQ->producer_idx, le32_to_cpu(circularQ->consumer_index));
+
+	if (WARN_ON(q_index >= pm8001_ha->max_q_num))
+		return -EINVAL;
+
 	spin_lock_irqsave(&circularQ->iq_lock, flags);
 	rv = pm8001_mpi_msg_free_get(circularQ, pm8001_ha->iomb_size,
 			&pMessage);
@@ -1876,8 +1883,8 @@ static void pm8001_send_read_log(struct pm8001_hba_info *pm8001_ha,
  * @piomb: the message contents of this outbound message.
  *
  * When FW has completed a ssp request for example a IO request, after it has
- * filled the SG data with the data, it will trigger this event represent
- * that he has finished the job,please check the coresponding buffer.
+ * filled the SG data with the data, it will trigger this event representing
+ * that he has finished the job; please check the corresponding buffer.
  * So we will tell the caller who maybe waiting the result to tell upper layer
  * that the task has been finished.
  */
@@ -1930,7 +1937,7 @@ mpi_ssp_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 			   param);
 		if (param == 0) {
 			ts->resp = SAS_TASK_COMPLETE;
-			ts->stat = SAM_STAT_GOOD;
+			ts->stat = SAS_SAM_STAT_GOOD;
 		} else {
 			ts->resp = SAS_TASK_COMPLETE;
 			ts->stat = SAS_PROTO_RESPONSE;
@@ -2304,21 +2311,17 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 
 	psataPayload = (struct sata_completion_resp *)(piomb + 4);
 	status = le32_to_cpu(psataPayload->status);
+	param = le32_to_cpu(psataPayload->param);
 	tag = le32_to_cpu(psataPayload->tag);
 
 	if (!tag) {
 		pm8001_dbg(pm8001_ha, FAIL, "tag null\n");
 		return;
 	}
+
 	ccb = &pm8001_ha->ccb_info[tag];
-	param = le32_to_cpu(psataPayload->param);
-	if (ccb) {
-		t = ccb->task;
-		pm8001_dev = ccb->device;
-	} else {
-		pm8001_dbg(pm8001_ha, FAIL, "ccb null\n");
-		return;
-	}
+	t = ccb->task;
+	pm8001_dev = ccb->device;
 
 	if (t) {
 		if (t->dev && (t->dev->lldd_dev))
@@ -2335,10 +2338,6 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	}
 
 	ts = &t->task_status;
-	if (!ts) {
-		pm8001_dbg(pm8001_ha, FAIL, "ts null\n");
-		return;
-	}
 
 	if (status)
 		pm8001_dbg(pm8001_ha, IOERR,
@@ -2390,7 +2389,7 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 		pm8001_dbg(pm8001_ha, IO, "IO_SUCCESS\n");
 		if (param == 0) {
 			ts->resp = SAS_TASK_COMPLETE;
-			ts->stat = SAM_STAT_GOOD;
+			ts->stat = SAS_SAM_STAT_GOOD;
 			/* check if response is for SEND READ LOG */
 			if (pm8001_dev &&
 				(pm8001_dev->id & NCQ_READ_LOG_FLAG)) {
@@ -2693,16 +2692,7 @@ static void mpi_sata_event(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	u32 tag = le32_to_cpu(psataPayload->tag);
 	u32 port_id = le32_to_cpu(psataPayload->port_id);
 	u32 dev_id = le32_to_cpu(psataPayload->device_id);
-	unsigned long flags;
 
-	ccb = &pm8001_ha->ccb_info[tag];
-
-	if (ccb) {
-		t = ccb->task;
-		pm8001_dev = ccb->device;
-	} else {
-		pm8001_dbg(pm8001_ha, FAIL, "No CCB !!!. returning\n");
-	}
 	if (event)
 		pm8001_dbg(pm8001_ha, FAIL, "SATA EVENT 0x%x\n", event);
 
@@ -2733,8 +2723,6 @@ static void mpi_sata_event(struct pm8001_hba_info *pm8001_ha, void *piomb)
 		ts->resp = SAS_TASK_COMPLETE;
 		ts->stat = SAS_DATA_OVERRUN;
 		ts->residual = 0;
-		if (pm8001_dev)
-			atomic_dec(&pm8001_dev->running_req);
 		break;
 	case IO_XFER_ERROR_BREAK:
 		pm8001_dbg(pm8001_ha, IO, "IO_XFER_ERROR_BREAK\n");
@@ -2776,7 +2764,6 @@ static void mpi_sata_event(struct pm8001_hba_info *pm8001_ha, void *piomb)
 				IO_OPEN_CNX_ERROR_IT_NEXUS_LOSS);
 			ts->resp = SAS_TASK_COMPLETE;
 			ts->stat = SAS_QUEUE_FULL;
-			pm8001_ccb_task_free_done(pm8001_ha, t, ccb, tag);
 			return;
 		}
 		break;
@@ -2862,20 +2849,6 @@ static void mpi_sata_event(struct pm8001_hba_info *pm8001_ha, void *piomb)
 		ts->stat = SAS_OPEN_TO;
 		break;
 	}
-	spin_lock_irqsave(&t->task_state_lock, flags);
-	t->task_state_flags &= ~SAS_TASK_STATE_PENDING;
-	t->task_state_flags &= ~SAS_TASK_AT_INITIATOR;
-	t->task_state_flags |= SAS_TASK_STATE_DONE;
-	if (unlikely((t->task_state_flags & SAS_TASK_STATE_ABORTED))) {
-		spin_unlock_irqrestore(&t->task_state_lock, flags);
-		pm8001_dbg(pm8001_ha, FAIL,
-			   "task 0x%p done with io_status 0x%x resp 0x%x stat 0x%x but aborted by upper layer!\n",
-			   t, event, ts->resp, ts->stat);
-		pm8001_ccb_task_free(pm8001_ha, t, ccb, tag);
-	} else {
-		spin_unlock_irqrestore(&t->task_state_lock, flags);
-		pm8001_ccb_task_free_done(pm8001_ha, t, ccb, tag);
-	}
 }
 
 /*See the comments for mpi_ssp_completion */
@@ -2912,7 +2885,7 @@ mpi_smp_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	case IO_SUCCESS:
 		pm8001_dbg(pm8001_ha, IO, "IO_SUCCESS\n");
 		ts->resp = SAS_TASK_COMPLETE;
-		ts->stat = SAM_STAT_GOOD;
+		ts->stat = SAS_SAM_STAT_GOOD;
 		if (pm8001_dev)
 			atomic_dec(&pm8001_dev->running_req);
 		break;
@@ -2939,17 +2912,17 @@ mpi_smp_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	case IO_ERROR_HW_TIMEOUT:
 		pm8001_dbg(pm8001_ha, IO, "IO_ERROR_HW_TIMEOUT\n");
 		ts->resp = SAS_TASK_COMPLETE;
-		ts->stat = SAM_STAT_BUSY;
+		ts->stat = SAS_SAM_STAT_BUSY;
 		break;
 	case IO_XFER_ERROR_BREAK:
 		pm8001_dbg(pm8001_ha, IO, "IO_XFER_ERROR_BREAK\n");
 		ts->resp = SAS_TASK_COMPLETE;
-		ts->stat = SAM_STAT_BUSY;
+		ts->stat = SAS_SAM_STAT_BUSY;
 		break;
 	case IO_XFER_ERROR_PHY_NOT_READY:
 		pm8001_dbg(pm8001_ha, IO, "IO_XFER_ERROR_PHY_NOT_READY\n");
 		ts->resp = SAS_TASK_COMPLETE;
-		ts->stat = SAM_STAT_BUSY;
+		ts->stat = SAS_SAM_STAT_BUSY;
 		break;
 	case IO_OPEN_CNX_ERROR_PROTOCOL_NOT_SUPPORTED:
 		pm8001_dbg(pm8001_ha, IO,
@@ -3169,7 +3142,7 @@ pm8001_mpi_get_nvmd_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	 * fw_control_context->usrAddr
 	 */
 	complete(pm8001_ha->nvmd_completion);
-	pm8001_dbg(pm8001_ha, MSG, "Set nvm data complete!\n");
+	pm8001_dbg(pm8001_ha, MSG, "Get nvmd data complete!\n");
 	ccb->task = NULL;
 	ccb->ccb_tag = 0xFFFFFFFF;
 	pm8001_tag_free(pm8001_ha, tag);
@@ -3358,6 +3331,8 @@ hw_event_sas_phy_up(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	struct pm8001_phy *phy = &pm8001_ha->phy[phy_id];
 	unsigned long flags;
 	u8 deviceType = pPayload->sas_identify.dev_type;
+	phy->port = port;
+	port->port_id = port_id;
 	port->port_state =  portstate;
 	phy->phy_state = PHY_STATE_LINK_UP_SPC;
 	pm8001_dbg(pm8001_ha, MSG,
@@ -3434,6 +3409,8 @@ hw_event_sata_phy_up(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	unsigned long flags;
 	pm8001_dbg(pm8001_ha, DEVIO, "HW_EVENT_SATA_PHY_UP port id = %d, phy id = %d\n",
 		   port_id, phy_id);
+	phy->port = port;
+	port->port_id = port_id;
 	port->port_state =  portstate;
 	phy->phy_state = PHY_STATE_LINK_UP_SPC;
 	port->port_attached = 1;
@@ -3522,7 +3499,7 @@ hw_event_phy_down(struct pm8001_hba_info *pm8001_ha, void *piomb)
  *
  * when sas layer find a device it will notify LLDD, then the driver register
  * the domain device to FW, this event is the return device ID which the FW
- * has assigned, from now,inter-communication with FW is no longer using the
+ * has assigned, from now, inter-communication with FW is no longer using the
  * SAS address, use device ID which FW assigned.
  */
 int pm8001_mpi_reg_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
@@ -3710,7 +3687,7 @@ int pm8001_mpi_task_abort_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	case IO_SUCCESS:
 		pm8001_dbg(pm8001_ha, EH, "IO_SUCCESS\n");
 		ts->resp = SAS_TASK_COMPLETE;
-		ts->stat = SAM_STAT_GOOD;
+		ts->stat = SAS_SAM_STAT_GOOD;
 		break;
 	case IO_NOT_VALID:
 		pm8001_dbg(pm8001_ha, EH, "IO_NOT_VALID\n");
@@ -4357,7 +4334,7 @@ static int pm8001_chip_sata_req(struct pm8001_hba_info *pm8001_ha,
 
 			spin_lock_irqsave(&task->task_state_lock, flags);
 			ts->resp = SAS_TASK_COMPLETE;
-			ts->stat = SAM_STAT_GOOD;
+			ts->stat = SAS_SAM_STAT_GOOD;
 			task->task_state_flags &= ~SAS_TASK_STATE_PENDING;
 			task->task_state_flags &= ~SAS_TASK_AT_INITIATOR;
 			task->task_state_flags |= SAS_TASK_STATE_DONE;
@@ -4460,6 +4437,7 @@ static int pm8001_chip_reg_dev_req(struct pm8001_hba_info *pm8001_ha,
 	u16 ITNT = 2000;
 	struct domain_device *dev = pm8001_dev->sas_device;
 	struct domain_device *parent_dev = dev->parent;
+	struct pm8001_port *port = dev->port->lldd_port;
 	circularQ = &pm8001_ha->inbnd_q_tbl[0];
 
 	memset(&payload, 0, sizeof(payload));
@@ -4476,8 +4454,7 @@ static int pm8001_chip_reg_dev_req(struct pm8001_hba_info *pm8001_ha,
 		if (pm8001_dev->dev_type == SAS_SATA_DEV)
 			stp_sspsmp_sata = 0x00; /* stp*/
 		else if (pm8001_dev->dev_type == SAS_END_DEVICE ||
-			pm8001_dev->dev_type == SAS_EDGE_EXPANDER_DEVICE ||
-			pm8001_dev->dev_type == SAS_FANOUT_EXPANDER_DEVICE)
+			dev_is_expander(pm8001_dev->dev_type))
 			stp_sspsmp_sata = 0x01; /*ssp or smp*/
 	}
 	if (parent_dev && dev_is_expander(parent_dev->dev_type))
@@ -4488,7 +4465,7 @@ static int pm8001_chip_reg_dev_req(struct pm8001_hba_info *pm8001_ha,
 	linkrate = (pm8001_dev->sas_device->linkrate < dev->port->linkrate) ?
 			pm8001_dev->sas_device->linkrate : dev->port->linkrate;
 	payload.phyid_portid =
-		cpu_to_le32(((pm8001_dev->sas_device->port->id) & 0x0F) |
+		cpu_to_le32(((port->port_id) & 0x0F) |
 		((phy_id & 0x0F) << 4));
 	payload.dtype_dlr_retry = cpu_to_le32((retryFlag & 0x01) |
 		((linkrate & 0x0F) * 0x1000000) |

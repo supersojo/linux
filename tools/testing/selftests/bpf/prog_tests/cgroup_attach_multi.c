@@ -15,22 +15,22 @@ static int prog_load_cnt(int verdict, int val)
 	int cgroup_storage_fd, percpu_cgroup_storage_fd;
 
 	if (map_fd < 0)
-		map_fd = bpf_create_map(BPF_MAP_TYPE_ARRAY, 4, 8, 1, 0);
+		map_fd = bpf_map_create(BPF_MAP_TYPE_ARRAY, NULL, 4, 8, 1, NULL);
 	if (map_fd < 0) {
 		printf("failed to create map '%s'\n", strerror(errno));
 		return -1;
 	}
 
-	cgroup_storage_fd = bpf_create_map(BPF_MAP_TYPE_CGROUP_STORAGE,
-				sizeof(struct bpf_cgroup_storage_key), 8, 0, 0);
+	cgroup_storage_fd = bpf_map_create(BPF_MAP_TYPE_CGROUP_STORAGE, NULL,
+				sizeof(struct bpf_cgroup_storage_key), 8, 0, NULL);
 	if (cgroup_storage_fd < 0) {
 		printf("failed to create map '%s'\n", strerror(errno));
 		return -1;
 	}
 
-	percpu_cgroup_storage_fd = bpf_create_map(
-		BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE,
-		sizeof(struct bpf_cgroup_storage_key), 8, 0, 0);
+	percpu_cgroup_storage_fd = bpf_map_create(
+		BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE, NULL,
+		sizeof(struct bpf_cgroup_storage_key), 8, 0, NULL);
 	if (percpu_cgroup_storage_fd < 0) {
 		printf("failed to create map '%s'\n", strerror(errno));
 		return -1;
@@ -66,7 +66,7 @@ static int prog_load_cnt(int verdict, int val)
 	size_t insns_cnt = sizeof(prog) / sizeof(struct bpf_insn);
 	int ret;
 
-	ret = bpf_load_program(BPF_PROG_TYPE_CGROUP_SKB,
+	ret = bpf_test_load_program(BPF_PROG_TYPE_CGROUP_SKB,
 			       prog, insns_cnt, "GPL", 0,
 			       bpf_log_buf, BPF_LOG_BUF_SIZE);
 
@@ -74,7 +74,7 @@ static int prog_load_cnt(int verdict, int val)
 	return ret;
 }
 
-void test_cgroup_attach_multi(void)
+void serial_test_cgroup_attach_multi(void)
 {
 	__u32 prog_ids[4], prog_cnt = 0, attach_flags, saved_prog_id;
 	int cg1 = 0, cg2 = 0, cg3 = 0, cg4 = 0, cg5 = 0, key = 0;
@@ -167,7 +167,7 @@ void test_cgroup_attach_multi(void)
 	prog_cnt = 2;
 	CHECK_FAIL(bpf_prog_query(cg5, BPF_CGROUP_INET_EGRESS,
 				  BPF_F_QUERY_EFFECTIVE, &attach_flags,
-				  prog_ids, &prog_cnt) != -1);
+				  prog_ids, &prog_cnt) >= 0);
 	CHECK_FAIL(errno != ENOSPC);
 	CHECK_FAIL(prog_cnt != 4);
 	/* check that prog_ids are returned even when buffer is too small */

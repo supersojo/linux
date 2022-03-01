@@ -66,6 +66,7 @@ struct nfulnl_instance {
 	struct sk_buff *skb;		/* pre-allocatd skb */
 	struct timer_list timer;
 	struct net *net;
+	netns_tracker ns_tracker;
 	struct user_namespace *peer_user_ns;	/* User namespace of the peer process */
 	u32 peer_portid;		/* PORTID of the peer process */
 
@@ -140,7 +141,7 @@ static void nfulnl_instance_free_rcu(struct rcu_head *head)
 	struct nfulnl_instance *inst =
 		container_of(head, struct nfulnl_instance, rcu);
 
-	put_net(inst->net);
+	put_net_track(inst->net, &inst->ns_tracker);
 	kfree(inst);
 	module_put(THIS_MODULE);
 }
@@ -187,7 +188,7 @@ instance_create(struct net *net, u_int16_t group_num,
 
 	timer_setup(&inst->timer, nfulnl_timer, 0);
 
-	inst->net = get_net(net);
+	inst->net = get_net_track(net, &inst->ns_tracker, GFP_ATOMIC);
 	inst->peer_user_ns = user_ns;
 	inst->peer_portid = portid;
 	inst->group_num = group_num;
@@ -556,7 +557,8 @@ __build_packet_message(struct nfnl_log_net *log,
 		goto nla_put_failure;
 
 	if (indev && skb->dev &&
-	    skb->mac_header != skb->network_header) {
+	    skb_mac_header_was_set(skb) &&
+	    skb_mac_header_len(skb) != 0) {
 		struct nfulnl_msg_packet_hw phw;
 		int len;
 
@@ -871,15 +873,14 @@ static int nfulnl_recv_config(struct sk_buff *skb, const struct nfnl_info *info,
 			      const struct nlattr * const nfula[])
 {
 	struct nfnl_log_net *log = nfnl_log_pernet(info->net);
-	struct nfgenmsg *nfmsg = nlmsg_data(info->nlh);
-	u_int16_t group_num = ntohs(nfmsg->res_id);
+	u_int16_t group_num = ntohs(info->nfmsg->res_id);
 	struct nfulnl_msg_config_cmd *cmd = NULL;
 	struct nfulnl_instance *inst;
 	u16 flags = 0;
 	int ret = 0;
 
 	if (nfula[NFULA_CFG_CMD]) {
-		u_int8_t pf = nfmsg->nfgen_family;
+		u_int8_t pf = info->nfmsg->nfgen_family;
 		cmd = nla_data(nfula[NFULA_CFG_CMD]);
 
 		/* Commands without queue context */

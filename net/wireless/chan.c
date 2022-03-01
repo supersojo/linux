@@ -6,7 +6,7 @@
  *
  * Copyright 2009	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
- * Copyright 2018-2020	Intel Corporation
+ * Copyright 2018-2021	Intel Corporation
  */
 
 #include <linux/export.h>
@@ -245,19 +245,7 @@ bool cfg80211_chandef_valid(const struct cfg80211_chan_def *chandef)
 		    oper_freq - MHZ_TO_KHZ(oper_width) / 2)
 			return false;
 		break;
-	case NL80211_CHAN_WIDTH_40:
-		if (chandef->center_freq1 != control_freq + 10 &&
-		    chandef->center_freq1 != control_freq - 10)
-			return false;
-		if (chandef->center_freq2)
-			return false;
-		break;
 	case NL80211_CHAN_WIDTH_80P80:
-		if (chandef->center_freq1 != control_freq + 30 &&
-		    chandef->center_freq1 != control_freq + 10 &&
-		    chandef->center_freq1 != control_freq - 10 &&
-		    chandef->center_freq1 != control_freq - 30)
-			return false;
 		if (!chandef->center_freq2)
 			return false;
 		/* adjacent is not allowed -- that's a 160 MHz channel */
@@ -265,28 +253,42 @@ bool cfg80211_chandef_valid(const struct cfg80211_chan_def *chandef)
 		    chandef->center_freq2 - chandef->center_freq1 == 80)
 			return false;
 		break;
-	case NL80211_CHAN_WIDTH_80:
-		if (chandef->center_freq1 != control_freq + 30 &&
-		    chandef->center_freq1 != control_freq + 10 &&
-		    chandef->center_freq1 != control_freq - 10 &&
-		    chandef->center_freq1 != control_freq - 30)
-			return false;
+	default:
 		if (chandef->center_freq2)
 			return false;
+		break;
+	}
+
+	switch (chandef->width) {
+	case NL80211_CHAN_WIDTH_5:
+	case NL80211_CHAN_WIDTH_10:
+	case NL80211_CHAN_WIDTH_20:
+	case NL80211_CHAN_WIDTH_20_NOHT:
+	case NL80211_CHAN_WIDTH_1:
+	case NL80211_CHAN_WIDTH_2:
+	case NL80211_CHAN_WIDTH_4:
+	case NL80211_CHAN_WIDTH_8:
+	case NL80211_CHAN_WIDTH_16:
+		/* all checked above */
 		break;
 	case NL80211_CHAN_WIDTH_160:
-		if (chandef->center_freq1 != control_freq + 70 &&
-		    chandef->center_freq1 != control_freq + 50 &&
-		    chandef->center_freq1 != control_freq + 30 &&
-		    chandef->center_freq1 != control_freq + 10 &&
-		    chandef->center_freq1 != control_freq - 10 &&
-		    chandef->center_freq1 != control_freq - 30 &&
-		    chandef->center_freq1 != control_freq - 50 &&
-		    chandef->center_freq1 != control_freq - 70)
-			return false;
-		if (chandef->center_freq2)
-			return false;
-		break;
+		if (chandef->center_freq1 == control_freq + 70 ||
+		    chandef->center_freq1 == control_freq + 50 ||
+		    chandef->center_freq1 == control_freq - 50 ||
+		    chandef->center_freq1 == control_freq - 70)
+			break;
+		fallthrough;
+	case NL80211_CHAN_WIDTH_80P80:
+	case NL80211_CHAN_WIDTH_80:
+		if (chandef->center_freq1 == control_freq + 30 ||
+		    chandef->center_freq1 == control_freq - 30)
+			break;
+		fallthrough;
+	case NL80211_CHAN_WIDTH_40:
+		if (chandef->center_freq1 == control_freq + 10 ||
+		    chandef->center_freq1 == control_freq - 10)
+			break;
+		fallthrough;
 	default:
 		return false;
 	}
@@ -712,6 +714,19 @@ static bool cfg80211_is_wiphy_oper_chan(struct wiphy *wiphy,
 	return false;
 }
 
+static bool
+cfg80211_offchan_chain_is_active(struct cfg80211_registered_device *rdev,
+				 struct ieee80211_channel *channel)
+{
+	if (!rdev->background_radar_wdev)
+		return false;
+
+	if (!cfg80211_chandef_valid(&rdev->background_radar_chandef))
+		return false;
+
+	return cfg80211_is_sub_chan(&rdev->background_radar_chandef, channel);
+}
+
 bool cfg80211_any_wiphy_oper_chan(struct wiphy *wiphy,
 				  struct ieee80211_channel *chan)
 {
@@ -727,6 +742,9 @@ bool cfg80211_any_wiphy_oper_chan(struct wiphy *wiphy,
 			continue;
 
 		if (cfg80211_is_wiphy_oper_chan(&rdev->wiphy, chan))
+			return true;
+
+		if (cfg80211_offchan_chain_is_active(rdev, chan))
 			return true;
 	}
 
@@ -942,7 +960,7 @@ bool cfg80211_chandef_usable(struct wiphy *wiphy,
 	struct ieee80211_sta_vht_cap *vht_cap;
 	struct ieee80211_edmg *edmg_cap;
 	u32 width, control_freq, cap;
-	bool support_80_80 = false;
+	bool ext_nss_cap, support_80_80 = false;
 
 	if (WARN_ON(!cfg80211_chandef_valid(chandef)))
 		return false;
@@ -950,6 +968,8 @@ bool cfg80211_chandef_usable(struct wiphy *wiphy,
 	ht_cap = &wiphy->bands[chandef->chan->band]->ht_cap;
 	vht_cap = &wiphy->bands[chandef->chan->band]->vht_cap;
 	edmg_cap = &wiphy->bands[chandef->chan->band]->edmg_cap;
+	ext_nss_cap = __le16_to_cpu(vht_cap->vht_mcs.tx_highest) &
+			IEEE80211_VHT_EXT_NSS_BW_CAPABLE;
 
 	if (edmg_cap->channels &&
 	    !cfg80211_edmg_usable(wiphy,
@@ -1015,7 +1035,8 @@ bool cfg80211_chandef_usable(struct wiphy *wiphy,
 			(cap & IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ) ||
 			(cap & IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160MHZ &&
 			 cap & IEEE80211_VHT_CAP_EXT_NSS_BW_MASK) ||
-			u32_get_bits(cap, IEEE80211_VHT_CAP_EXT_NSS_BW_MASK) > 1;
+			(ext_nss_cap &&
+			 u32_get_bits(cap, IEEE80211_VHT_CAP_EXT_NSS_BW_MASK) > 1);
 		if (chandef->chan->band != NL80211_BAND_6GHZ && !support_80_80)
 			return false;
 		fallthrough;
@@ -1037,7 +1058,8 @@ bool cfg80211_chandef_usable(struct wiphy *wiphy,
 		cap = vht_cap->cap & IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_MASK;
 		if (cap != IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160MHZ &&
 		    cap != IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ &&
-		    !(vht_cap->cap & IEEE80211_VHT_CAP_EXT_NSS_BW_MASK))
+		    !(ext_nss_cap &&
+		      (vht_cap->cap & IEEE80211_VHT_CAP_EXT_NSS_BW_MASK)))
 			return false;
 		break;
 	default:
@@ -1335,3 +1357,34 @@ cfg80211_get_chan_state(struct wireless_dev *wdev,
 		WARN_ON(1);
 	}
 }
+
+bool cfg80211_any_usable_channels(struct wiphy *wiphy,
+				  unsigned long sband_mask,
+				  u32 prohibited_flags)
+{
+	int idx;
+
+	prohibited_flags |= IEEE80211_CHAN_DISABLED;
+
+	for_each_set_bit(idx, &sband_mask, NUM_NL80211_BANDS) {
+		struct ieee80211_supported_band *sband = wiphy->bands[idx];
+		int chanidx;
+
+		if (!sband)
+			continue;
+
+		for (chanidx = 0; chanidx < sband->n_channels; chanidx++) {
+			struct ieee80211_channel *chan;
+
+			chan = &sband->channels[chanidx];
+
+			if (chan->flags & prohibited_flags)
+				continue;
+
+			return true;
+		}
+	}
+
+	return false;
+}
+EXPORT_SYMBOL(cfg80211_any_usable_channels);

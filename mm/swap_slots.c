@@ -30,6 +30,7 @@
 #include <linux/swap_slots.h>
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/mutex.h>
 #include <linux/mm.h>
@@ -43,8 +44,6 @@ static DEFINE_MUTEX(swap_slots_cache_mutex);
 static DEFINE_MUTEX(swap_slots_cache_enable_mutex);
 
 static void __drain_swap_slots_cache(unsigned int type);
-static void deactivate_swap_slots_cache(void);
-static void reactivate_swap_slots_cache(void);
 
 #define use_swap_slot_cache (swap_slot_cache_active && swap_slot_cache_enabled)
 #define SLOTS_CACHE 0x1
@@ -72,9 +71,9 @@ void disable_swap_slots_cache_lock(void)
 	swap_slot_cache_enabled = false;
 	if (swap_slot_cache_initialized) {
 		/* serialize with cpu hotplug operations */
-		get_online_cpus();
+		cpus_read_lock();
 		__drain_swap_slots_cache(SLOTS_CACHE|SLOTS_CACHE_RET);
-		put_online_cpus();
+		cpus_read_unlock();
 	}
 }
 

@@ -159,7 +159,7 @@ static int mock_hwsp_freelist(void *arg)
 	INIT_RADIX_TREE(&state.cachelines, GFP_KERNEL);
 	state.prng = I915_RND_STATE_INITIALIZER(i915_selftest.random_seed);
 
-	state.gt = &i915->gt;
+	state.gt = to_gt(i915);
 
 	/*
 	 * Create a bunch of timelines and check that their HWSP do not overlap.
@@ -457,12 +457,12 @@ static int emit_ggtt_store_dw(struct i915_request *rq, u32 addr, u32 value)
 	if (IS_ERR(cs))
 		return PTR_ERR(cs);
 
-	if (INTEL_GEN(rq->engine->i915) >= 8) {
+	if (GRAPHICS_VER(rq->engine->i915) >= 8) {
 		*cs++ = MI_STORE_DWORD_IMM_GEN4 | MI_USE_GGTT;
 		*cs++ = addr;
 		*cs++ = 0;
 		*cs++ = value;
-	} else if (INTEL_GEN(rq->engine->i915) >= 4) {
+	} else if (GRAPHICS_VER(rq->engine->i915) >= 4) {
 		*cs++ = MI_STORE_DWORD_IMM_GEN4 | MI_USE_GGTT;
 		*cs++ = 0;
 		*cs++ = addr;
@@ -874,7 +874,7 @@ static int create_watcher(struct hwsp_watcher *w,
 	if (IS_ERR(ce))
 		return PTR_ERR(ce);
 
-	ce->ring = __intel_context_ring_size(ringsz);
+	ce->ring_size = ringsz;
 	w->rq = intel_context_create_request(ce);
 	intel_context_put(ce);
 	if (IS_ERR(w->rq))
@@ -992,7 +992,7 @@ static int live_hwsp_read(void *arg)
 	 * even across multiple wraps.
 	 */
 
-	if (INTEL_GEN(gt->i915) < 8) /* CS convenience [SRM/LRM] */
+	if (GRAPHICS_VER(gt->i915) < 8) /* CS convenience [SRM/LRM] */
 		return 0;
 
 	tl = intel_timeline_create(gt);
@@ -1416,8 +1416,8 @@ int intel_timeline_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_hwsp_rollover_user),
 	};
 
-	if (intel_gt_is_wedged(&i915->gt))
+	if (intel_gt_is_wedged(to_gt(i915)))
 		return 0;
 
-	return intel_gt_live_subtests(tests, &i915->gt);
+	return intel_gt_live_subtests(tests, to_gt(i915));
 }

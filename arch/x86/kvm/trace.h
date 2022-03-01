@@ -92,6 +92,21 @@ TRACE_EVENT(kvm_hv_hypercall,
 		  __entry->outgpa)
 );
 
+TRACE_EVENT(kvm_hv_hypercall_done,
+	TP_PROTO(u64 result),
+	TP_ARGS(result),
+
+	TP_STRUCT__entry(
+		__field(__u64, result)
+	),
+
+	TP_fast_assign(
+		__entry->result	= result;
+	),
+
+	TP_printk("result 0x%llx", __entry->result)
+);
+
 /*
  * Tracepoint for Xen hypercall.
  */
@@ -273,8 +288,8 @@ TRACE_EVENT(kvm_apic,
 
 #define TRACE_EVENT_KVM_EXIT(name)					     \
 TRACE_EVENT(name,							     \
-	TP_PROTO(unsigned int exit_reason, struct kvm_vcpu *vcpu, u32 isa),  \
-	TP_ARGS(exit_reason, vcpu, isa),				     \
+	TP_PROTO(struct kvm_vcpu *vcpu, u32 isa),			     \
+	TP_ARGS(vcpu, isa),						     \
 									     \
 	TP_STRUCT__entry(						     \
 		__field(	unsigned int,	exit_reason	)	     \
@@ -288,11 +303,12 @@ TRACE_EVENT(name,							     \
 	),								     \
 									     \
 	TP_fast_assign(							     \
-		__entry->exit_reason	= exit_reason;			     \
 		__entry->guest_rip	= kvm_rip_read(vcpu);		     \
 		__entry->isa            = isa;				     \
 		__entry->vcpu_id        = vcpu->vcpu_id;		     \
-		static_call(kvm_x86_get_exit_info)(vcpu, &__entry->info1,    \
+		static_call(kvm_x86_get_exit_info)(vcpu,		     \
+					  &__entry->exit_reason,	     \
+					  &__entry->info1,		     \
 					  &__entry->info2,		     \
 					  &__entry->intr_info,		     \
 					  &__entry->error_code);	     \
@@ -997,7 +1013,7 @@ TRACE_EVENT(kvm_wait_lapic_expire,
 		  __entry->delta < 0 ? "early" : "late")
 );
 
-TRACE_EVENT(kvm_enter_smm,
+TRACE_EVENT(kvm_smm_transition,
 	TP_PROTO(unsigned int vcpu_id, u64 smbase, bool entering),
 	TP_ARGS(vcpu_id, smbase, entering),
 
@@ -1340,6 +1356,30 @@ TRACE_EVENT(kvm_apicv_update_request,
 		  __entry->bit)
 );
 
+TRACE_EVENT(kvm_apicv_accept_irq,
+	    TP_PROTO(__u32 apicid, __u16 dm, __u16 tm, __u8 vec),
+	    TP_ARGS(apicid, dm, tm, vec),
+
+	TP_STRUCT__entry(
+		__field(	__u32,		apicid		)
+		__field(	__u16,		dm		)
+		__field(	__u16,		tm		)
+		__field(	__u8,		vec		)
+	),
+
+	TP_fast_assign(
+		__entry->apicid		= apicid;
+		__entry->dm		= dm;
+		__entry->tm		= tm;
+		__entry->vec		= vec;
+	),
+
+	TP_printk("apicid %x vec %u (%s|%s)",
+		  __entry->apicid, __entry->vec,
+		  __print_symbolic((__entry->dm >> 8 & 0x7), kvm_deliver_mode),
+		  __entry->tm ? "level" : "edge")
+);
+
 /*
  * Tracepoint for AMD AVIC
  */
@@ -1550,16 +1590,16 @@ TRACE_EVENT(kvm_nested_vmenter_failed,
 	TP_ARGS(msg, err),
 
 	TP_STRUCT__entry(
-		__field(const char *, msg)
+		__string(msg, msg)
 		__field(u32, err)
 	),
 
 	TP_fast_assign(
-		__entry->msg = msg;
+		__assign_str(msg, msg);
 		__entry->err = err;
 	),
 
-	TP_printk("%s%s", __entry->msg, !__entry->err ? "" :
+	TP_printk("%s%s", __get_str(msg), !__entry->err ? "" :
 		__print_symbolic(__entry->err, VMX_VMENTER_INSTRUCTION_ERRORS))
 );
 

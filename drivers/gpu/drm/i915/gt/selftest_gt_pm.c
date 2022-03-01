@@ -43,7 +43,7 @@ static void measure_clocks(struct intel_engine_cs *engine,
 	int i;
 
 	for (i = 0; i < 5; i++) {
-		preempt_disable();
+		local_irq_disable();
 		cycles[i] = -ENGINE_READ_FW(engine, RING_TIMESTAMP);
 		dt[i] = ktime_get();
 
@@ -51,7 +51,7 @@ static void measure_clocks(struct intel_engine_cs *engine,
 
 		dt[i] = ktime_sub(ktime_get(), dt[i]);
 		cycles[i] += ENGINE_READ_FW(engine, RING_TIMESTAMP);
-		preempt_enable();
+		local_irq_enable();
 	}
 
 	/* Use the median of both cycle/dt; close enough */
@@ -74,10 +74,10 @@ static int live_gt_clocks(void *arg)
 		return 0;
 	}
 
-	if (INTEL_GEN(gt->i915) < 4) /* Any CS_TIMESTAMP? */
+	if (GRAPHICS_VER(gt->i915) < 4) /* Any CS_TIMESTAMP? */
 		return 0;
 
-	if (IS_GEN(gt->i915, 5))
+	if (GRAPHICS_VER(gt->i915) == 5)
 		/*
 		 * XXX CS_TIMESTAMP low dword is dysfunctional?
 		 *
@@ -86,7 +86,7 @@ static int live_gt_clocks(void *arg)
 		 */
 		return 0;
 
-	if (IS_GEN(gt->i915, 4))
+	if (GRAPHICS_VER(gt->i915) == 4)
 		/*
 		 * XXX CS_TIMESTAMP appears gibberish
 		 *
@@ -105,7 +105,7 @@ static int live_gt_clocks(void *arg)
 		u64 time;
 		u64 dt;
 
-		if (INTEL_GEN(engine->i915) < 7 && engine->id != RCS0)
+		if (GRAPHICS_VER(engine->i915) < 7 && engine->id != RCS0)
 			continue;
 
 		measure_clocks(engine, &cycles, &dt);
@@ -193,10 +193,10 @@ int intel_gt_pm_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_gt_resume),
 	};
 
-	if (intel_gt_is_wedged(&i915->gt))
+	if (intel_gt_is_wedged(to_gt(i915)))
 		return 0;
 
-	return intel_gt_live_subtests(tests, &i915->gt);
+	return intel_gt_live_subtests(tests, to_gt(i915));
 }
 
 int intel_gt_pm_late_selftests(struct drm_i915_private *i915)
@@ -210,8 +210,8 @@ int intel_gt_pm_late_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_rc6_ctx_wa),
 	};
 
-	if (intel_gt_is_wedged(&i915->gt))
+	if (intel_gt_is_wedged(to_gt(i915)))
 		return 0;
 
-	return intel_gt_live_subtests(tests, &i915->gt);
+	return intel_gt_live_subtests(tests, to_gt(i915));
 }

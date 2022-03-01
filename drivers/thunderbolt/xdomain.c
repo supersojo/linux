@@ -214,16 +214,12 @@ static inline void tb_xdp_fill_header(struct tb_xdp_header *hdr, u64 route,
 	memcpy(&hdr->uuid, &tb_xdp_uuid, sizeof(tb_xdp_uuid));
 }
 
-static int tb_xdp_handle_error(const struct tb_xdp_header *hdr)
+static int tb_xdp_handle_error(const struct tb_xdp_error_response *res)
 {
-	const struct tb_xdp_error_response *error;
-
-	if (hdr->type != ERROR_RESPONSE)
+	if (res->hdr.type != ERROR_RESPONSE)
 		return 0;
 
-	error = (const struct tb_xdp_error_response *)hdr;
-
-	switch (error->error) {
+	switch (res->error) {
 	case ERROR_UNKNOWN_PACKET:
 	case ERROR_UNKNOWN_DOMAIN:
 		return -EIO;
@@ -257,7 +253,7 @@ static int tb_xdp_uuid_request(struct tb_ctl *ctl, u64 route, int retry,
 	if (ret)
 		return ret;
 
-	ret = tb_xdp_handle_error(&res.hdr);
+	ret = tb_xdp_handle_error(&res.err);
 	if (ret)
 		return ret;
 
@@ -329,7 +325,7 @@ static int tb_xdp_properties_request(struct tb_ctl *ctl, u64 route,
 		if (ret)
 			goto err;
 
-		ret = tb_xdp_handle_error(&res->hdr);
+		ret = tb_xdp_handle_error(&res->err);
 		if (ret)
 			goto err;
 
@@ -462,7 +458,7 @@ static int tb_xdp_properties_changed_request(struct tb_ctl *ctl, u64 route,
 	if (ret)
 		return ret;
 
-	return tb_xdp_handle_error(&res.hdr);
+	return tb_xdp_handle_error(&res.err);
 }
 
 static int
@@ -730,7 +726,7 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
 
 	/* Full buffer size except new line and null termination */
 	get_modalias(svc, buf, PAGE_SIZE - 2);
-	return sprintf(buf, "%s\n", buf);
+	return strlen(strcat(buf, "\n"));
 }
 static DEVICE_ATTR_RO(modalias);
 
@@ -1527,6 +1523,13 @@ int tb_xdomain_lane_bonding_enable(struct tb_xdomain *xd)
 		return ret;
 	}
 
+	ret = tb_port_wait_for_link_width(port, 2, 100);
+	if (ret) {
+		tb_port_warn(port, "timeout enabling lane bonding\n");
+		return ret;
+	}
+
+	tb_port_update_credits(port);
 	tb_xdomain_update_link_attributes(xd);
 
 	dev_dbg(&xd->dev, "lane bonding enabled\n");
@@ -1548,7 +1551,10 @@ void tb_xdomain_lane_bonding_disable(struct tb_xdomain *xd)
 	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
 	if (port->dual_link_port) {
 		tb_port_lane_bonding_disable(port);
+		if (tb_port_wait_for_link_width(port, 1, 100) == -ETIMEDOUT)
+			tb_port_warn(port, "timeout disabling lane bonding\n");
 		tb_port_disable(port->dual_link_port);
+		tb_port_update_credits(port);
 		tb_xdomain_update_link_attributes(xd);
 
 		dev_dbg(&xd->dev, "lane bonding disabled\n");

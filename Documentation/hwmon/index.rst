@@ -39,9 +39,12 @@ Hardware Monitoring Kernel Drivers
    adt7475
    aht10
    amc6821
+   aquacomputer_d5next
    asb100
    asc7621
    aspeed-pwm-tacho
+   asus_wmi_ec_sensors
+   asus_wmi_sensors
    bcm54140
    bel-pfe
    bpa-rs600
@@ -53,6 +56,7 @@ Hardware Monitoring Kernel Drivers
    da9055
    dell-smm-hwmon
    dme1737
+   dps920ab
    drivetemp
    ds1621
    ds620
@@ -74,6 +78,7 @@ Hardware Monitoring Kernel Drivers
    ibmpowernv
    ina209
    ina2xx
+   ina238
    ina3221
    intel-m10-bmc-hwmon
    ir35221
@@ -128,6 +133,7 @@ Hardware Monitoring Kernel Drivers
    max31785
    max31790
    max34440
+   max6620
    max6639
    max6642
    max6650
@@ -137,7 +143,9 @@ Hardware Monitoring Kernel Drivers
    mcp3021
    menf21bmc
    mlxreg-fan
+   mp2888
    mp2975
+   mp5023
    nct6683
    nct6775
    nct7802
@@ -146,10 +154,12 @@ Hardware Monitoring Kernel Drivers
    nsa320
    ntc_thermistor
    nzxt-kraken2
+   nzxt-smart2
    occ
    pc87360
    pc87427
    pcf8591
+   pim4328
    pm6764tr
    pmbus
    powr1220
@@ -157,6 +167,7 @@ Hardware Monitoring Kernel Drivers
    pwm-fan
    q54sj108a2
    raspberrypi-hwmon
+   sbrmi
    sbtsi_temp
    sch5627
    sch5636
@@ -164,6 +175,7 @@ Hardware Monitoring Kernel Drivers
    sht15
    sht21
    sht3x
+   sht4x
    shtc1
    sis5595
    sl28cpld

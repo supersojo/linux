@@ -83,9 +83,6 @@ static void amdgpu_display_flip_work_func(struct work_struct *__work)
 	unsigned i;
 	int vpos, hpos;
 
-	if (amdgpu_display_flip_handle_fence(work, &work->excl))
-		return;
-
 	for (i = 0; i < work->shared_count; ++i)
 		if (amdgpu_display_flip_handle_fence(work, &work->shared[i]))
 			return;
@@ -203,9 +200,8 @@ int amdgpu_display_crtc_page_flip_target(struct drm_crtc *crtc,
 		goto unpin;
 	}
 
-	r = dma_resv_get_fences_rcu(new_abo->tbo.base.resv, &work->excl,
-					      &work->shared_count,
-					      &work->shared);
+	r = dma_resv_get_fences(new_abo->tbo.base.resv, NULL,
+				&work->shared_count, &work->shared);
 	if (unlikely(r != 0)) {
 		DRM_ERROR("failed to get fences for buffer\n");
 		goto unpin;
@@ -254,7 +250,6 @@ unreserve:
 
 cleanup:
 	amdgpu_bo_unref(&work->old_abo);
-	dma_fence_put(work->excl);
 	for (i = 0; i < work->shared_count; ++i)
 		dma_fence_put(work->shared[i]);
 	kfree(work->shared);
@@ -523,6 +518,7 @@ uint32_t amdgpu_display_supported_domains(struct amdgpu_device *adev,
 			break;
 		case CHIP_RENOIR:
 		case CHIP_VANGOGH:
+		case CHIP_YELLOW_CARP:
 			domain |= AMDGPU_GEM_DOMAIN_GTT;
 			break;
 
@@ -837,6 +833,28 @@ static int convert_tiling_flags_to_modifier(struct amdgpu_framebuffer *afb)
 	return 0;
 }
 
+/* Mirrors the is_displayable check in radeonsi's gfx6_compute_surface */
+static int check_tiling_flags_gfx6(struct amdgpu_framebuffer *afb)
+{
+	u64 micro_tile_mode;
+
+	/* Zero swizzle mode means linear */
+	if (AMDGPU_TILING_GET(afb->tiling_flags, SWIZZLE_MODE) == 0)
+		return 0;
+
+	micro_tile_mode = AMDGPU_TILING_GET(afb->tiling_flags, MICRO_TILE_MODE);
+	switch (micro_tile_mode) {
+	case 0: /* DISPLAY */
+	case 3: /* RENDER */
+		return 0;
+	default:
+		drm_dbg_kms(afb->base.dev,
+			    "Micro tile mode %llu not supported for scanout\n",
+			    micro_tile_mode);
+		return -EINVAL;
+	}
+}
+
 static void get_block_dimensions(unsigned int block_log2, unsigned int cpp,
 				 unsigned int *width, unsigned int *height)
 {
@@ -1047,17 +1065,18 @@ int amdgpu_display_gem_fb_init(struct drm_device *dev,
 
 	rfb->base.obj[0] = obj;
 	drm_helper_mode_fill_fb_struct(dev, &rfb->base, mode_cmd);
-	ret = drm_framebuffer_init(dev, &rfb->base, &amdgpu_fb_funcs);
-	if (ret)
-		goto err;
 
 	ret = amdgpu_display_framebuffer_init(dev, rfb, mode_cmd, obj);
 	if (ret)
 		goto err;
 
+	ret = drm_framebuffer_init(dev, &rfb->base, &amdgpu_fb_funcs);
+	if (ret)
+		goto err;
+
 	return 0;
 err:
-	drm_err(dev, "Failed to init gem fb: %d\n", ret);
+	drm_dbg_kms(dev, "Failed to init gem fb: %d\n", ret);
 	rfb->base.obj[0] = NULL;
 	return ret;
 }
@@ -1071,18 +1090,12 @@ int amdgpu_display_gem_fb_verify_and_init(
 
 	rfb->base.obj[0] = obj;
 	drm_helper_mode_fill_fb_struct(dev, &rfb->base, mode_cmd);
-	ret = drm_framebuffer_init(dev, &rfb->base, &amdgpu_fb_funcs);
-	if (ret)
-		goto err;
 	/* Verify that the modifier is supported. */
 	if (!drm_any_plane_has_format(dev, mode_cmd->pixel_format,
 				      mode_cmd->modifier[0])) {
-		struct drm_format_name_buf format_name;
 		drm_dbg_kms(dev,
-			    "unsupported pixel format %s / modifier 0x%llx\n",
-			    drm_get_format_name(mode_cmd->pixel_format,
-						&format_name),
-			    mode_cmd->modifier[0]);
+			    "unsupported pixel format %p4cc / modifier 0x%llx\n",
+			    &mode_cmd->pixel_format, mode_cmd->modifier[0]);
 
 		ret = -EINVAL;
 		goto err;
@@ -1092,9 +1105,13 @@ int amdgpu_display_gem_fb_verify_and_init(
 	if (ret)
 		goto err;
 
+	ret = drm_framebuffer_init(dev, &rfb->base, &amdgpu_fb_funcs);
+	if (ret)
+		goto err;
+
 	return 0;
 err:
-	drm_err(dev, "Failed to verify and init gem fb: %d\n", ret);
+	drm_dbg_kms(dev, "Failed to verify and init gem fb: %d\n", ret);
 	rfb->base.obj[0] = NULL;
 	return ret;
 }
@@ -1104,6 +1121,7 @@ int amdgpu_display_framebuffer_init(struct drm_device *dev,
 				    const struct drm_mode_fb_cmd2 *mode_cmd,
 				    struct drm_gem_object *obj)
 {
+	struct amdgpu_device *adev = drm_to_adev(dev);
 	int ret, i;
 
 	/*
@@ -1122,6 +1140,14 @@ int amdgpu_display_framebuffer_init(struct drm_device *dev,
 	ret = amdgpu_display_get_fb_info(rfb, &rfb->tiling_flags, &rfb->tmz_surface);
 	if (ret)
 		return ret;
+
+	if (!dev->mode_config.allow_fb_modifiers && !adev->enable_virtual_display) {
+		drm_WARN_ONCE(dev, adev->family >= AMDGPU_FAMILY_AI,
+			      "GFX9+ requires FB check based on format modifier\n");
+		ret = check_tiling_flags_gfx6(rfb);
+		if (ret)
+			return ret;
+	}
 
 	if (dev->mode_config.allow_fb_modifiers &&
 	    !(rfb->base.flags & DRM_MODE_FB_MODIFIERS)) {
@@ -1334,7 +1360,7 @@ bool amdgpu_display_crtc_scaling_mode_fixup(struct drm_crtc *crtc,
 		if ((!(mode->flags & DRM_MODE_FLAG_INTERLACE)) &&
 		    ((amdgpu_encoder->underscan_type == UNDERSCAN_ON) ||
 		     ((amdgpu_encoder->underscan_type == UNDERSCAN_AUTO) &&
-		      drm_detect_hdmi_monitor(amdgpu_connector_edid(connector)) &&
+		      connector->display_info.is_hdmi &&
 		      amdgpu_display_is_hdtv_mode(mode)))) {
 			if (amdgpu_encoder->underscan_hborder != 0)
 				amdgpu_crtc->h_border = amdgpu_encoder->underscan_hborder;
@@ -1573,13 +1599,10 @@ int amdgpu_display_suspend_helper(struct amdgpu_device *adev)
 			continue;
 		}
 		robj = gem_to_amdgpu_bo(fb->obj[0]);
-		/* don't unpin kernel fb objects */
-		if (!amdgpu_fbdev_robj_is_fb(adev, robj)) {
-			r = amdgpu_bo_reserve(robj, true);
-			if (r == 0) {
-				amdgpu_bo_unpin(robj);
-				amdgpu_bo_unreserve(robj);
-			}
+		r = amdgpu_bo_reserve(robj, true);
+		if (r == 0) {
+			amdgpu_bo_unpin(robj);
+			amdgpu_bo_unreserve(robj);
 		}
 	}
 	return 0;

@@ -15,7 +15,7 @@ struct process_cmd_struct {
 	int arg;
 };
 
-static const char *version_str = "v1.9";
+static const char *version_str = "v1.11";
 static const int supported_api_ver = 1;
 static struct isst_if_platform_info isst_platform_info;
 static char *progname;
@@ -101,6 +101,22 @@ int is_clx_n_platform(void)
 int is_skx_based_platform(void)
 {
 	if (cpu_model == 0x55)
+		return 1;
+
+	return 0;
+}
+
+int is_spr_platform(void)
+{
+	if (cpu_model == 0x8F)
+		return 1;
+
+	return 0;
+}
+
+int is_icx_platform(void)
+{
+	if (cpu_model == 0x6A || cpu_model == 0x6C)
 		return 1;
 
 	return 0;
@@ -1583,6 +1599,7 @@ static void set_scaling_min_to_cpuinfo_max(int cpu)
 		    die_id != get_physical_die_id(i))
 			continue;
 
+		adjust_scaling_max_from_base_freq(i);
 		set_cpufreq_scaling_min_max_from_cpuinfo(i, 1, 0);
 		adjust_scaling_min_from_base_freq(i);
 	}
@@ -1599,6 +1616,7 @@ static void set_scaling_min_to_cpuinfo_min(int cpu)
 		    die_id != get_physical_die_id(i))
 			continue;
 
+		adjust_scaling_max_from_base_freq(i);
 		set_cpufreq_scaling_min_max_from_cpuinfo(i, 0, 0);
 	}
 }

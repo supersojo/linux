@@ -136,7 +136,6 @@ static void free_rd_atomic_resources(struct rxe_qp *qp)
 void free_rd_atomic_resource(struct rxe_qp *qp, struct resp_res *res)
 {
 	if (res->type == RXE_ATOMIC_MASK) {
-		rxe_drop_ref(qp);
 		kfree_skb(res->atomic.skb);
 	} else if (res->type == RXE_READ_MASK) {
 		if (res->read.mr)
@@ -168,7 +167,7 @@ static void rxe_qp_init_misc(struct rxe_dev *rxe, struct rxe_qp *qp,
 	qp->attr.path_mtu	= 1;
 	qp->mtu			= ib_mtu_enum_to_int(qp->attr.path_mtu);
 
-	qpn			= qp->pelem.index;
+	qpn			= qp->elem.index;
 	port			= &rxe->port;
 
 	switch (init->qp_type) {
@@ -191,8 +190,6 @@ static void rxe_qp_init_misc(struct rxe_dev *rxe, struct rxe_qp *qp,
 
 	INIT_LIST_HEAD(&qp->grp_list);
 
-	skb_queue_head_init(&qp->send_pkts);
-
 	spin_lock_init(&qp->grp_lock);
 	spin_lock_init(&qp->state_lock);
 
@@ -206,6 +203,7 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 {
 	int err;
 	int wqe_size;
+	enum queue_type type;
 
 	err = sock_create_kern(&init_net, AF_INET, SOCK_DGRAM, 0, &qp->sk);
 	if (err < 0)
@@ -219,8 +217,7 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 	 * the port number must be in the Dynamic Ports range
 	 * (0xc000 - 0xffff).
 	 */
-	qp->src_port = RXE_ROCE_V2_SPORT +
-		(hash_32_generic(qp_num(qp), 14) & 0x3fff);
+	qp->src_port = RXE_ROCE_V2_SPORT + (hash_32(qp_num(qp), 14) & 0x3fff);
 	qp->sq.max_wr		= init->cap.max_send_wr;
 
 	/* These caps are limited by rxe_qp_chk_cap() done by the caller */
@@ -231,7 +228,9 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 	qp->sq.max_inline = init->cap.max_inline_data = wqe_size;
 	wqe_size += sizeof(struct rxe_send_wqe);
 
-	qp->sq.queue = rxe_queue_init(rxe, &qp->sq.max_wr, wqe_size);
+	type = QUEUE_TYPE_FROM_CLIENT;
+	qp->sq.queue = rxe_queue_init(rxe, &qp->sq.max_wr,
+				wqe_size, type);
 	if (!qp->sq.queue)
 		return -ENOMEM;
 
@@ -246,7 +245,9 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 		return err;
 	}
 
-	qp->req.wqe_index	= producer_index(qp->sq.queue);
+	qp->req.wqe_index = queue_get_producer(qp->sq.queue,
+					       QUEUE_TYPE_FROM_CLIENT);
+
 	qp->req.state		= QP_STATE_RESET;
 	qp->req.opcode		= -1;
 	qp->comp.opcode		= -1;
@@ -274,6 +275,7 @@ static int rxe_qp_init_resp(struct rxe_dev *rxe, struct rxe_qp *qp,
 {
 	int err;
 	int wqe_size;
+	enum queue_type type;
 
 	if (!qp->srq) {
 		qp->rq.max_wr		= init->cap.max_recv_wr;
@@ -284,9 +286,9 @@ static int rxe_qp_init_resp(struct rxe_dev *rxe, struct rxe_qp *qp,
 		pr_debug("qp#%d max_wr = %d, max_sge = %d, wqe_size = %d\n",
 			 qp_num(qp), qp->rq.max_wr, qp->rq.max_sge, wqe_size);
 
-		qp->rq.queue = rxe_queue_init(rxe,
-					      &qp->rq.max_wr,
-					      wqe_size);
+		type = QUEUE_TYPE_FROM_CLIENT;
+		qp->rq.queue = rxe_queue_init(rxe, &qp->rq.max_wr,
+					wqe_size, type);
 		if (!qp->rq.queue)
 			return -ENOMEM;
 
@@ -356,6 +358,7 @@ int rxe_qp_from_init(struct rxe_dev *rxe, struct rxe_qp *qp, struct rxe_pd *pd,
 
 err2:
 	rxe_queue_cleanup(qp->sq.queue);
+	qp->sq.queue = NULL;
 err1:
 	qp->pd = NULL;
 	qp->rcq = NULL;
@@ -828,9 +831,9 @@ static void rxe_qp_do_cleanup(struct work_struct *work)
 }
 
 /* called when the last reference to the qp is dropped */
-void rxe_qp_cleanup(struct rxe_pool_entry *arg)
+void rxe_qp_cleanup(struct rxe_pool_elem *elem)
 {
-	struct rxe_qp *qp = container_of(arg, typeof(*qp), pelem);
+	struct rxe_qp *qp = container_of(elem, typeof(*qp), elem);
 
 	execute_in_process_context(rxe_qp_do_cleanup, &qp->cleanup_work);
 }

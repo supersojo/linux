@@ -289,7 +289,7 @@ static ssize_t api_show(struct device *dev,
 {
 	struct uacce_device *uacce = to_uacce_device(dev);
 
-	return sprintf(buf, "%s\n", uacce->api_ver);
+	return sysfs_emit(buf, "%s\n", uacce->api_ver);
 }
 
 static ssize_t flags_show(struct device *dev,
@@ -297,7 +297,7 @@ static ssize_t flags_show(struct device *dev,
 {
 	struct uacce_device *uacce = to_uacce_device(dev);
 
-	return sprintf(buf, "%u\n", uacce->flags);
+	return sysfs_emit(buf, "%u\n", uacce->flags);
 }
 
 static ssize_t available_instances_show(struct device *dev,
@@ -309,7 +309,7 @@ static ssize_t available_instances_show(struct device *dev,
 	if (!uacce->ops->get_available_instances)
 		return -ENODEV;
 
-	return sprintf(buf, "%d\n",
+	return sysfs_emit(buf, "%d\n",
 		       uacce->ops->get_available_instances(uacce));
 }
 
@@ -318,7 +318,7 @@ static ssize_t algorithms_show(struct device *dev,
 {
 	struct uacce_device *uacce = to_uacce_device(dev);
 
-	return sprintf(buf, "%s\n", uacce->algs);
+	return sysfs_emit(buf, "%s\n", uacce->algs);
 }
 
 static ssize_t region_mmio_size_show(struct device *dev,
@@ -326,7 +326,7 @@ static ssize_t region_mmio_size_show(struct device *dev,
 {
 	struct uacce_device *uacce = to_uacce_device(dev);
 
-	return sprintf(buf, "%lu\n",
+	return sysfs_emit(buf, "%lu\n",
 		       uacce->qf_pg_num[UACCE_QFRT_MMIO] << PAGE_SHIFT);
 }
 
@@ -335,7 +335,7 @@ static ssize_t region_dus_size_show(struct device *dev,
 {
 	struct uacce_device *uacce = to_uacce_device(dev);
 
-	return sprintf(buf, "%lu\n",
+	return sysfs_emit(buf, "%lu\n",
 		       uacce->qf_pg_num[UACCE_QFRT_DUS] << PAGE_SHIFT);
 }
 
@@ -387,15 +387,22 @@ static void uacce_release(struct device *dev)
 
 static unsigned int uacce_enable_sva(struct device *parent, unsigned int flags)
 {
+	int ret;
+
 	if (!(flags & UACCE_DEV_SVA))
 		return flags;
 
 	flags &= ~UACCE_DEV_SVA;
 
-	if (iommu_dev_enable_feature(parent, IOMMU_DEV_FEAT_IOPF))
+	ret = iommu_dev_enable_feature(parent, IOMMU_DEV_FEAT_IOPF);
+	if (ret) {
+		dev_err(parent, "failed to enable IOPF feature! ret = %pe\n", ERR_PTR(ret));
 		return flags;
+	}
 
-	if (iommu_dev_enable_feature(parent, IOMMU_DEV_FEAT_SVA)) {
+	ret = iommu_dev_enable_feature(parent, IOMMU_DEV_FEAT_SVA);
+	if (ret) {
+		dev_err(parent, "failed to enable SVA feature! ret = %pe\n", ERR_PTR(ret));
 		iommu_dev_disable_feature(parent, IOMMU_DEV_FEAT_IOPF);
 		return flags;
 	}

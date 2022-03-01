@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2018-2020 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2021 Intel Corporation
  * Copyright (C) 2013-2014 Intel Mobile Communications GmbH
  * Copyright (C) 2017 Intel Deutschland GmbH
  */
@@ -76,6 +76,7 @@ static void iwl_mvm_phy_ctxt_cmd_hdr(struct iwl_mvm_phy_ctxt *ctxt,
 }
 
 static void iwl_mvm_phy_ctxt_set_rxchain(struct iwl_mvm *mvm,
+					 struct iwl_mvm_phy_ctxt *ctxt,
 					 __le32 *rxchain_info,
 					 u8 chains_static,
 					 u8 chains_dynamic)
@@ -93,9 +94,20 @@ static void iwl_mvm_phy_ctxt_set_rxchain(struct iwl_mvm *mvm,
 	 * between the two antennas is sufficiently different to impact
 	 * performance.
 	 */
-	if (active_cnt == 1 && iwl_mvm_rx_diversity_allowed(mvm)) {
+	if (active_cnt == 1 && iwl_mvm_rx_diversity_allowed(mvm, ctxt)) {
 		idle_cnt = 2;
 		active_cnt = 2;
+	}
+
+	/*
+	 * If the firmware requested it, then we know that it supports
+	 * getting zero for the values to indicate "use one, but pick
+	 * which one yourself", which means it can dynamically pick one
+	 * that e.g. has better RSSI.
+	 */
+	if (mvm->fw_static_smps_request && active_cnt == 1 && idle_cnt == 1) {
+		idle_cnt = 0;
+		active_cnt = 0;
 	}
 
 	*rxchain_info = cpu_to_le32(iwl_mvm_get_valid_rx_ant(mvm) <<
@@ -113,6 +125,7 @@ static void iwl_mvm_phy_ctxt_set_rxchain(struct iwl_mvm *mvm,
  * Add the phy configuration to the PHY context command
  */
 static void iwl_mvm_phy_ctxt_cmd_data_v1(struct iwl_mvm *mvm,
+					 struct iwl_mvm_phy_ctxt *ctxt,
 					 struct iwl_phy_context_cmd_v1 *cmd,
 					 struct cfg80211_chan_def *chandef,
 					 u8 chains_static, u8 chains_dynamic)
@@ -123,7 +136,7 @@ static void iwl_mvm_phy_ctxt_cmd_data_v1(struct iwl_mvm *mvm,
 	/* Set the channel info data */
 	iwl_mvm_set_chan_info_chandef(mvm, &cmd->ci, chandef);
 
-	iwl_mvm_phy_ctxt_set_rxchain(mvm, &tail->rxchain_info,
+	iwl_mvm_phy_ctxt_set_rxchain(mvm, ctxt, &tail->rxchain_info,
 				     chains_static, chains_dynamic);
 
 	tail->txchain_info = cpu_to_le32(iwl_mvm_get_valid_tx_ant(mvm));
@@ -133,6 +146,7 @@ static void iwl_mvm_phy_ctxt_cmd_data_v1(struct iwl_mvm *mvm,
  * Add the phy configuration to the PHY context command
  */
 static void iwl_mvm_phy_ctxt_cmd_data(struct iwl_mvm *mvm,
+				      struct iwl_mvm_phy_ctxt *ctxt,
 				      struct iwl_phy_context_cmd *cmd,
 				      struct cfg80211_chan_def *chandef,
 				      u8 chains_static, u8 chains_dynamic)
@@ -143,8 +157,43 @@ static void iwl_mvm_phy_ctxt_cmd_data(struct iwl_mvm *mvm,
 	/* Set the channel info data */
 	iwl_mvm_set_chan_info_chandef(mvm, &cmd->ci, chandef);
 
-	iwl_mvm_phy_ctxt_set_rxchain(mvm, &cmd->rxchain_info,
+	/* we only support RLC command version 2 */
+	if (iwl_fw_lookup_cmd_ver(mvm->fw, DATA_PATH_GROUP,
+				  RLC_CONFIG_CMD, 0) < 2)
+		iwl_mvm_phy_ctxt_set_rxchain(mvm, ctxt, &cmd->rxchain_info,
+					     chains_static, chains_dynamic);
+}
+
+static int iwl_mvm_phy_send_rlc(struct iwl_mvm *mvm,
+				struct iwl_mvm_phy_ctxt *ctxt,
+				u8 chains_static, u8 chains_dynamic)
+{
+	struct iwl_rlc_config_cmd cmd = {
+		.phy_id = cpu_to_le32(ctxt->id),
+	};
+
+	if (iwl_fw_lookup_cmd_ver(mvm->fw, DATA_PATH_GROUP,
+				  RLC_CONFIG_CMD, 0) < 2)
+		return 0;
+
+	BUILD_BUG_ON(IWL_RLC_CHAIN_INFO_DRIVER_FORCE !=
+		     PHY_RX_CHAIN_DRIVER_FORCE_MSK);
+	BUILD_BUG_ON(IWL_RLC_CHAIN_INFO_VALID !=
+		     PHY_RX_CHAIN_VALID_MSK);
+	BUILD_BUG_ON(IWL_RLC_CHAIN_INFO_FORCE !=
+		     PHY_RX_CHAIN_FORCE_SEL_MSK);
+	BUILD_BUG_ON(IWL_RLC_CHAIN_INFO_FORCE_MIMO !=
+		     PHY_RX_CHAIN_FORCE_MIMO_SEL_MSK);
+	BUILD_BUG_ON(IWL_RLC_CHAIN_INFO_COUNT != PHY_RX_CHAIN_CNT_MSK);
+	BUILD_BUG_ON(IWL_RLC_CHAIN_INFO_MIMO_COUNT !=
+		     PHY_RX_CHAIN_MIMO_CNT_MSK);
+
+	iwl_mvm_phy_ctxt_set_rxchain(mvm, ctxt, &cmd.rlc.rx_chain_info,
 				     chains_static, chains_dynamic);
+
+	return iwl_mvm_send_cmd_pdu(mvm, iwl_cmd_id(RLC_CONFIG_CMD,
+						    DATA_PATH_GROUP, 2),
+				    0, sizeof(cmd), &cmd);
 }
 
 /*
@@ -163,14 +212,14 @@ static int iwl_mvm_phy_ctxt_apply(struct iwl_mvm *mvm,
 	int ver = iwl_fw_lookup_cmd_ver(mvm->fw, IWL_ALWAYS_LONG_GROUP,
 					PHY_CONTEXT_CMD, 1);
 
-	if (ver == 3) {
+	if (ver == 3 || ver == 4) {
 		struct iwl_phy_context_cmd cmd = {};
 
 		/* Set the command header fields */
 		iwl_mvm_phy_ctxt_cmd_hdr(ctxt, &cmd, action);
 
 		/* Set the command data */
-		iwl_mvm_phy_ctxt_cmd_data(mvm, &cmd, chandef,
+		iwl_mvm_phy_ctxt_cmd_data(mvm, ctxt, &cmd, chandef,
 					  chains_static,
 					  chains_dynamic);
 
@@ -186,7 +235,7 @@ static int iwl_mvm_phy_ctxt_apply(struct iwl_mvm *mvm,
 					 action);
 
 		/* Set the command data */
-		iwl_mvm_phy_ctxt_cmd_data_v1(mvm, &cmd, chandef,
+		iwl_mvm_phy_ctxt_cmd_data_v1(mvm, ctxt, &cmd, chandef,
 					     chains_static,
 					     chains_dynamic);
 		ret = iwl_mvm_send_cmd_pdu(mvm, PHY_CONTEXT_CMD,
@@ -197,9 +246,16 @@ static int iwl_mvm_phy_ctxt_apply(struct iwl_mvm *mvm,
 	}
 
 
-	if (ret)
+	if (ret) {
 		IWL_ERR(mvm, "PHY ctxt cmd error. ret=%d\n", ret);
-	return ret;
+		return ret;
+	}
+
+	if (action != FW_CTXT_ACTION_REMOVE)
+		return iwl_mvm_phy_send_rlc(mvm, ctxt, chains_static,
+					    chains_dynamic);
+
+	return 0;
 }
 
 /*
@@ -214,6 +270,8 @@ int iwl_mvm_phy_ctxt_add(struct iwl_mvm *mvm, struct iwl_mvm_phy_ctxt *ctxt,
 	lockdep_assert_held(&mvm->mutex);
 
 	ctxt->channel = chandef->chan;
+	ctxt->width = chandef->width;
+	ctxt->center_freq1 = chandef->center_freq1;
 
 	return iwl_mvm_phy_ctxt_apply(mvm, ctxt, chandef,
 				      chains_static, chains_dynamic,
@@ -243,6 +301,14 @@ int iwl_mvm_phy_ctxt_changed(struct iwl_mvm *mvm, struct iwl_mvm_phy_ctxt *ctxt,
 
 	lockdep_assert_held(&mvm->mutex);
 
+	if (iwl_fw_lookup_cmd_ver(mvm->fw, DATA_PATH_GROUP,
+				  RLC_CONFIG_CMD, 0) >= 2 &&
+	    ctxt->channel == chandef->chan &&
+	    ctxt->width == chandef->width &&
+	    ctxt->center_freq1 == chandef->center_freq1)
+		return iwl_mvm_phy_send_rlc(mvm, ctxt, chains_static,
+					    chains_dynamic);
+
 	if (fw_has_capa(&mvm->fw->ucode_capa,
 			IWL_UCODE_TLV_CAPA_BINDING_CDB_SUPPORT) &&
 	    ctxt->channel->band != chandef->chan->band) {
@@ -261,6 +327,8 @@ int iwl_mvm_phy_ctxt_changed(struct iwl_mvm *mvm, struct iwl_mvm_phy_ctxt *ctxt,
 
 	ctxt->channel = chandef->chan;
 	ctxt->width = chandef->width;
+	ctxt->center_freq1 = chandef->center_freq1;
+
 	return iwl_mvm_phy_ctxt_apply(mvm, ctxt, chandef,
 				      chains_static, chains_dynamic,
 				      action);

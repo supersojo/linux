@@ -221,7 +221,7 @@ static int mma8452_set_runtime_pm_state(struct i2c_client *client, bool on)
 	int ret;
 
 	if (on) {
-		ret = pm_runtime_get_sync(&client->dev);
+		ret = pm_runtime_resume_and_get(&client->dev);
 	} else {
 		pm_runtime_mark_last_busy(&client->dev);
 		ret = pm_runtime_put_autosuspend(&client->dev);
@@ -230,8 +230,6 @@ static int mma8452_set_runtime_pm_state(struct i2c_client *client, bool on)
 	if (ret < 0) {
 		dev_err(&client->dev,
 			"failed to change power state to %d\n", on);
-		if (on)
-			pm_runtime_put_noidle(&client->dev);
 
 		return ret;
 	}
@@ -1055,7 +1053,7 @@ static irqreturn_t mma8452_interrupt(int irq, void *p)
 {
 	struct iio_dev *indio_dev = p;
 	struct mma8452_data *data = iio_priv(indio_dev);
-	int ret = IRQ_NONE;
+	irqreturn_t ret = IRQ_NONE;
 	int src;
 
 	src = i2c_smbus_read_byte_data(data->client, MMA8452_INT_SRC);
@@ -1461,7 +1459,7 @@ static int mma8452_trigger_setup(struct iio_dev *indio_dev)
 
 	trig = devm_iio_trigger_alloc(&data->client->dev, "%s-dev%d",
 				      indio_dev->name,
-				      indio_dev->id);
+				      iio_device_id(indio_dev));
 	if (!trig)
 		return -ENOMEM;
 
@@ -1472,7 +1470,7 @@ static int mma8452_trigger_setup(struct iio_dev *indio_dev)
 	if (ret)
 		return ret;
 
-	indio_dev->trig = trig;
+	indio_dev->trig = iio_trigger_get(trig);
 
 	return 0;
 }
@@ -1711,7 +1709,6 @@ static int mma8452_remove(struct i2c_client *client)
 
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-	pm_runtime_put_noidle(&client->dev);
 
 	iio_triggered_buffer_cleanup(indio_dev);
 	mma8452_trigger_cleanup(indio_dev);

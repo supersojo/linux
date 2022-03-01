@@ -8,7 +8,6 @@ title: ChromeOS Embedded Controller
 
 maintainers:
   - Benson Leung <bleung@chromium.org>
-  - Enric Balletbo i Serra <enric.balletbo@collabora.com>
   - Guenter Roeck <groeck@chromium.org>
 
 description:
@@ -59,7 +58,7 @@ properties:
       whether this nvram is present or not.
     type: boolean
 
-  mtk,rpmsg-name:
+  mediatek,rpmsg-name:
     description:
       Must be defined if the cros-ec is a rpmsg device for a Mediatek
       ARM Cortex M4 Co-processor. Contains the name pf the rpmsg
@@ -116,6 +115,22 @@ properties:
     required:
       - "#address-cells"
       - "#size-cells"
+
+  cbas:
+    type: object
+
+    description:
+      This device is used to signal when a detachable base is attached
+      to a Chrome OS tablet. This device cannot be detected at runtime.
+
+    properties:
+      compatible:
+        const: google,cros-cbas
+
+    required:
+      - compatible
+
+    additionalProperties: false
 
 patternProperties:
   "^i2c-tunnel[0-9]*$":
@@ -186,6 +201,10 @@ examples:
 
             proximity {
                     compatible = "google,cros-ec-mkbp-proximity";
+            };
+
+            cbas {
+                compatible = "google,cros-cbas";
             };
         };
     };

@@ -16,16 +16,15 @@ struct fib_alias {
 	u8			fa_slen;
 	u32			tb_id;
 	s16			fa_default;
-	u8			offload:1,
-				trap:1,
-				offload_failed:1,
-				unused:5;
+	u8			offload;
+	u8			trap;
+	u8			offload_failed;
 	struct rcu_head		rcu;
 };
 
 #define FA_S_ACCESSED	0x01
 
-/* Dont write on fa_state unless needed, to keep it shared on all cpus */
+/* Don't write on fa_state unless needed, to keep it shared on all cpus */
 static inline void fib_alias_accessed(struct fib_alias *fa)
 {
 	if (!(fa->fa_state & FA_S_ACCESSED))

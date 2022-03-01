@@ -16,6 +16,7 @@
 #include <crypto/authenc.h>
 #include <linux/err.h>
 #include <linux/module.h>
+#include <net/gro.h>
 #include <net/ip.h>
 #include <net/xfrm.h>
 #include <net/esp.h>
@@ -377,7 +378,6 @@ static const struct net_offload esp6_offload = {
 };
 
 static const struct xfrm_type_offload esp6_type_offload = {
-	.description	= "ESP6 OFFLOAD",
 	.owner		= THIS_MODULE,
 	.proto	     	= IPPROTO_ESP,
 	.input_tail	= esp6_input_tail,

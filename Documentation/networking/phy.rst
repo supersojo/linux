@@ -237,6 +237,11 @@ negotiation results.
 
 Some of the interface modes are described below:
 
+``PHY_INTERFACE_MODE_SMII``
+    This is serial MII, clocked at 125MHz, supporting 100M and 10M speeds.
+    Some details can be found in
+    https://opencores.org/ocsvn/smii/smii/trunk/doc/SMII.pdf
+
 ``PHY_INTERFACE_MODE_1000BASEX``
     This defines the 1000BASE-X single-lane serdes link as defined by the
     802.3 standard section 36.  The link operates at a fixed bit rate of
@@ -291,6 +296,12 @@ Some of the interface modes are described below:
 
     Note: due to legacy usage, some 10GBASE-R usage incorrectly makes
     use of this definition.
+
+``PHY_INTERFACE_MODE_25GBASER``
+    This is the IEEE 802.3 PCS Clause 107 defined 25GBASE-R protocol.
+    The PCS is identical to 10GBASE-R, i.e. 64B/66B encoded
+    running 2.5 as fast, giving a fixed bit rate of 25.78125 Gbaud.
+    Please refer to the IEEE standard for further information.
 
 ``PHY_INTERFACE_MODE_100BASEX``
     This defines IEEE 802.3 Clause 24.  The link operates at a fixed data

@@ -72,8 +72,6 @@ struct mtd_oob_ops {
 	uint8_t		*oobbuf;
 };
 
-#define MTD_MAX_OOBFREE_ENTRIES_LARGE	32
-#define MTD_MAX_ECCPOS_ENTRIES_LARGE	640
 /**
  * struct mtd_oob_region - oob region definition
  * @offset: region offset
@@ -380,6 +378,8 @@ struct mtd_info {
 	int usecount;
 	struct mtd_debug_info dbg;
 	struct nvmem_device *nvmem;
+	struct nvmem_device *otp_user_nvmem;
+	struct nvmem_device *otp_factory_nvmem;
 
 	/*
 	 * Parent device from the MTD partition point of view.
@@ -710,5 +710,8 @@ static inline int mtd_is_bitflip_or_eccerr(int err) {
 }
 
 unsigned mtd_mmap_capabilities(struct mtd_info *mtd);
+
+extern char *mtd_expert_analysis_warning;
+extern bool mtd_expert_analysis_mode;
 
 #endif /* __MTD_MTD_H__ */

@@ -188,7 +188,7 @@ static inline bool arch_test_and_set_bit_lock(unsigned long nr,
 					      volatile unsigned long *ptr)
 {
 	if (arch_test_bit(nr, ptr))
-		return 1;
+		return true;
 	return arch_test_and_set_bit(nr, ptr);
 }
 
@@ -299,13 +299,13 @@ static inline unsigned char __flogr(unsigned long word)
 		}
 		return bit;
 	} else {
-		register unsigned long bit asm("4") = word;
-		register unsigned long out asm("5");
+		union register_pair rp;
 
+		rp.even = word;
 		asm volatile(
-			"       flogr   %[bit],%[bit]\n"
-			: [bit] "+d" (bit), [out] "=d" (out) : : "cc");
-		return bit;
+			"       flogr   %[rp],%[rp]\n"
+			: [rp] "+d" (rp.pair) : : "cc");
+		return rp.even;
 	}
 }
 
@@ -387,7 +387,6 @@ static inline int fls(unsigned int word)
 #endif /* CONFIG_HAVE_MARCH_Z9_109_FEATURES */
 
 #include <asm-generic/bitops/ffz.h>
-#include <asm-generic/bitops/find.h>
 #include <asm-generic/bitops/hweight.h>
 #include <asm-generic/bitops/sched.h>
 #include <asm-generic/bitops/le.h>

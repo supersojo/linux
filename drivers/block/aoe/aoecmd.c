@@ -122,7 +122,7 @@ newtag(struct aoedev *d)
 	register ulong n;
 
 	n = jiffies & 0xffff;
-	return n |= (++d->lasttag & 0x7fff) << 16;
+	return n | (++d->lasttag & 0x7fff) << 16;
 }
 
 static u32
@@ -1700,8 +1700,6 @@ aoecmd_init(void)
 		ret = -ENOMEM;
 		goto ktiowq_fail;
 	}
-
-	mutex_init(&ktio_spawn_lock);
 
 	for (i = 0; i < ncpus; i++) {
 		INIT_LIST_HEAD(&iocq[i].head);

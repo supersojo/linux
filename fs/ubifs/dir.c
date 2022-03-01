@@ -1207,7 +1207,7 @@ out_budg:
  * @inode1: first inode
  * @inode2: second inode
  * @inode3: third inode
- * @inode4: fouth inode
+ * @inode4: fourth inode
  *
  * This function is used for 'ubifs_rename()' and @inode1 may be the same as
  * @inode2 whereas @inode3 and @inode4 may be %NULL.
@@ -1233,7 +1233,7 @@ static void lock_4_inodes(struct inode *inode1, struct inode *inode2,
  * @inode1: first inode
  * @inode2: second inode
  * @inode3: third inode
- * @inode4: fouth inode
+ * @inode4: fourth inode
  */
 static void unlock_4_inodes(struct inode *inode1, struct inode *inode2,
 			    struct inode *inode3, struct inode *inode4)
@@ -1337,7 +1337,10 @@ static int do_rename(struct inode *old_dir, struct dentry *old_dentry,
 			goto out_release;
 		}
 
+		spin_lock(&whiteout->i_lock);
 		whiteout->i_state |= I_LINKABLE;
+		spin_unlock(&whiteout->i_lock);
+
 		whiteout_ui = ubifs_inode(whiteout);
 		whiteout_ui->data = dev;
 		whiteout_ui->data_len = ubifs_encode_dev(dev, MKDEV(0, 0));
@@ -1430,7 +1433,11 @@ static int do_rename(struct inode *old_dir, struct dentry *old_dentry,
 
 		inc_nlink(whiteout);
 		mark_inode_dirty(whiteout);
+
+		spin_lock(&whiteout->i_lock);
 		whiteout->i_state &= ~I_LINKABLE;
+		spin_unlock(&whiteout->i_lock);
+
 		iput(whiteout);
 	}
 

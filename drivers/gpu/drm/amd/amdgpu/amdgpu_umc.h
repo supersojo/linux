@@ -22,6 +22,11 @@
 #define __AMDGPU_UMC_H__
 
 /*
+ * (addr / 256) * 4096, the higher 26 bits in ErrorAddr
+ * is the index of 4KB block
+ */
+#define ADDR_OF_4KB_BLOCK(addr)			(((addr) & ~0xffULL) << 4)
+/*
  * (addr / 256) * 8192, the higher 26 bits in ErrorAddr
  * is the index of 8KB block
  */
@@ -42,6 +47,11 @@ struct amdgpu_umc_ras_funcs {
 	void (*query_ras_error_count)(struct amdgpu_device *adev,
 				      void *ras_error_status);
 	void (*query_ras_error_address)(struct amdgpu_device *adev,
+					void *ras_error_status);
+	bool (*query_ras_poison_mode)(struct amdgpu_device *adev);
+	void (*ecc_info_query_ras_error_count)(struct amdgpu_device *adev,
+				      void *ras_error_status);
+	void (*ecc_info_query_ras_error_address)(struct amdgpu_device *adev,
 					void *ras_error_status);
 };
 
@@ -68,9 +78,9 @@ struct amdgpu_umc {
 
 int amdgpu_umc_ras_late_init(struct amdgpu_device *adev);
 void amdgpu_umc_ras_fini(struct amdgpu_device *adev);
-int amdgpu_umc_process_ras_data_cb(struct amdgpu_device *adev,
+int amdgpu_umc_poison_handler(struct amdgpu_device *adev,
 		void *ras_error_status,
-		struct amdgpu_iv_entry *entry);
+		bool reset);
 int amdgpu_umc_process_ecc_irq(struct amdgpu_device *adev,
 		struct amdgpu_irq_src *source,
 		struct amdgpu_iv_entry *entry);

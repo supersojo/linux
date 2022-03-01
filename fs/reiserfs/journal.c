@@ -951,7 +951,9 @@ static int reiserfs_async_progress_wait(struct super_block *s)
 		int depth;
 
 		depth = reiserfs_write_unlock_nested(s);
-		congestion_wait(BLK_RW_ASYNC, HZ / 10);
+		wait_var_event_timeout(&j->j_async_throttle,
+				       atomic_read(&j->j_async_throttle) == 0,
+				       HZ / 10);
 		reiserfs_write_lock_nested(s, depth);
 	}
 
@@ -1058,7 +1060,8 @@ static int flush_commit_list(struct super_block *s,
 			put_bh(tbh) ;
 		}
 	}
-	atomic_dec(&journal->j_async_throttle);
+	if (atomic_dec_and_test(&journal->j_async_throttle))
+		wake_up_var(&journal->j_async_throttle);
 
 	for (i = 0; i < (jl->j_len + 1); i++) {
 		bn = SB_ONDISK_JOURNAL_1st_BLOCK(s) +
@@ -2755,6 +2758,20 @@ int journal_init(struct super_block *sb, const char *j_dev_name,
 				 SB_JOURNAL_1st_RESERVED_BLOCK(sb),
 				 SB_ONDISK_JOURNAL_SIZE(sb),
 				 sb->s_blocksize);
+		goto free_and_return;
+	}
+
+	/*
+	 * Sanity check to see if journal first block is correct.
+	 * If journal first block is invalid it can cause
+	 * zeroing important superblock members.
+	 */
+	if (!SB_ONDISK_JOURNAL_DEVICE(sb) &&
+	    SB_ONDISK_JOURNAL_1st_BLOCK(sb) < SB_JOURNAL_1st_RESERVED_BLOCK(sb)) {
+		reiserfs_warning(sb, "journal-1393",
+				 "journal 1st super block is invalid: 1st reserved block %d, but actual 1st block is %d",
+				 SB_JOURNAL_1st_RESERVED_BLOCK(sb),
+				 SB_ONDISK_JOURNAL_1st_BLOCK(sb));
 		goto free_and_return;
 	}
 

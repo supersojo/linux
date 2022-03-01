@@ -193,6 +193,30 @@ int tb_lc_start_lane_initialization(struct tb_port *port)
 	return tb_sw_write(sw, &ctrl, TB_CFG_SWITCH, cap + TB_LC_SX_CTRL, 1);
 }
 
+/**
+ * tb_lc_is_clx_supported() - Check whether CLx is supported by the lane adapter
+ * @port: Lane adapter
+ *
+ * TB_LC_LINK_ATTR_CPS bit reflects if the link supports CLx including
+ * active cables (if connected on the link).
+ */
+bool tb_lc_is_clx_supported(struct tb_port *port)
+{
+	struct tb_switch *sw = port->sw;
+	int cap, ret;
+	u32 val;
+
+	cap = find_port_lc_cap(port);
+	if (cap < 0)
+		return false;
+
+	ret = tb_sw_read(sw, &val, TB_CFG_SWITCH, cap + TB_LC_LINK_ATTR, 1);
+	if (ret)
+		return false;
+
+	return !!(val & TB_LC_LINK_ATTR_CPS);
+}
+
 static int tb_lc_set_wake_one(struct tb_switch *sw, unsigned int offset,
 			      unsigned int flags)
 {
@@ -208,8 +232,8 @@ static int tb_lc_set_wake_one(struct tb_switch *sw, unsigned int offset,
 	if (ret)
 		return ret;
 
-	ctrl &= ~(TB_LC_SX_CTRL_WOC | TB_LC_SX_CTRL_WOD | TB_LC_SX_CTRL_WOP |
-		  TB_LC_SX_CTRL_WOU4);
+	ctrl &= ~(TB_LC_SX_CTRL_WOC | TB_LC_SX_CTRL_WOD | TB_LC_SX_CTRL_WODPC |
+		  TB_LC_SX_CTRL_WODPD | TB_LC_SX_CTRL_WOP | TB_LC_SX_CTRL_WOU4);
 
 	if (flags & TB_WAKE_ON_CONNECT)
 		ctrl |= TB_LC_SX_CTRL_WOC | TB_LC_SX_CTRL_WOD;
@@ -217,6 +241,8 @@ static int tb_lc_set_wake_one(struct tb_switch *sw, unsigned int offset,
 		ctrl |= TB_LC_SX_CTRL_WOU4;
 	if (flags & TB_WAKE_ON_PCIE)
 		ctrl |= TB_LC_SX_CTRL_WOP;
+	if (flags & TB_WAKE_ON_DP)
+		ctrl |= TB_LC_SX_CTRL_WODPC | TB_LC_SX_CTRL_WODPD;
 
 	return tb_sw_write(sw, &ctrl, TB_CFG_SWITCH, offset + TB_LC_SX_CTRL, 1);
 }
