@@ -113,17 +113,17 @@ static int nf_trace_fill_pkt_info(struct sk_buff *nlskb,
 	int off = skb_network_offset(skb);
 	unsigned int len, nh_end;
 
-	nh_end = pkt->tprot_set ? pkt->xt.thoff : skb->len;
+	nh_end = pkt->flags & NFT_PKTINFO_L4PROTO ? nft_thoff(pkt) : skb->len;
 	len = min_t(unsigned int, nh_end - skb_network_offset(skb),
 		    NFT_TRACETYPE_NETWORK_HSIZE);
 	if (trace_fill_header(nlskb, NFTA_TRACE_NETWORK_HEADER, skb, off, len))
 		return -1;
 
-	if (pkt->tprot_set) {
-		len = min_t(unsigned int, skb->len - pkt->xt.thoff,
+	if (pkt->flags & NFT_PKTINFO_L4PROTO) {
+		len = min_t(unsigned int, skb->len - nft_thoff(pkt),
 			    NFT_TRACETYPE_TRANSPORT_HSIZE);
 		if (trace_fill_header(nlskb, NFTA_TRACE_TRANSPORT_HEADER, skb,
-				      pkt->xt.thoff, len))
+				      nft_thoff(pkt), len))
 			return -1;
 	}
 
@@ -142,7 +142,7 @@ static int nf_trace_fill_pkt_info(struct sk_buff *nlskb,
 static int nf_trace_fill_rule_info(struct sk_buff *nlskb,
 				   const struct nft_traceinfo *info)
 {
-	if (!info->rule)
+	if (!info->rule || info->rule->is_last)
 		return 0;
 
 	/* a continue verdict with ->type == RETURN means that this is

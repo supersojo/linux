@@ -25,7 +25,7 @@ int rxe_cq_chk_attr(struct rxe_dev *rxe, struct rxe_cq *cq,
 	}
 
 	if (cq) {
-		count = queue_count(cq->queue);
+		count = queue_count(cq->queue, QUEUE_TYPE_TO_CLIENT);
 		if (cqe < count) {
 			pr_warn("cqe(%d) < current # elements in queue (%d)",
 				cqe, count);
@@ -42,14 +42,13 @@ err1:
 static void rxe_send_complete(struct tasklet_struct *t)
 {
 	struct rxe_cq *cq = from_tasklet(cq, t, comp_task);
-	unsigned long flags;
 
-	spin_lock_irqsave(&cq->cq_lock, flags);
+	spin_lock_bh(&cq->cq_lock);
 	if (cq->is_dying) {
-		spin_unlock_irqrestore(&cq->cq_lock, flags);
+		spin_unlock_bh(&cq->cq_lock);
 		return;
 	}
-	spin_unlock_irqrestore(&cq->cq_lock, flags);
+	spin_unlock_bh(&cq->cq_lock);
 
 	cq->ibcq.comp_handler(&cq->ibcq, cq->ibcq.cq_context);
 }
@@ -59,9 +58,11 @@ int rxe_cq_from_init(struct rxe_dev *rxe, struct rxe_cq *cq, int cqe,
 		     struct rxe_create_cq_resp __user *uresp)
 {
 	int err;
+	enum queue_type type;
 
+	type = QUEUE_TYPE_TO_CLIENT;
 	cq->queue = rxe_queue_init(rxe, &cqe,
-				   sizeof(struct rxe_cqe));
+			sizeof(struct rxe_cqe), type);
 	if (!cq->queue) {
 		pr_warn("unable to create cq\n");
 		return -ENOMEM;
@@ -75,8 +76,7 @@ int rxe_cq_from_init(struct rxe_dev *rxe, struct rxe_cq *cq, int cqe,
 		return err;
 	}
 
-	if (uresp)
-		cq->is_user = 1;
+	cq->is_user = uresp;
 
 	cq->is_dying = false;
 
@@ -105,12 +105,14 @@ int rxe_cq_resize_queue(struct rxe_cq *cq, int cqe,
 int rxe_cq_post(struct rxe_cq *cq, struct rxe_cqe *cqe, int solicited)
 {
 	struct ib_event ev;
-	unsigned long flags;
+	int full;
+	void *addr;
 
-	spin_lock_irqsave(&cq->cq_lock, flags);
+	spin_lock_bh(&cq->cq_lock);
 
-	if (unlikely(queue_full(cq->queue))) {
-		spin_unlock_irqrestore(&cq->cq_lock, flags);
+	full = queue_full(cq->queue, QUEUE_TYPE_TO_CLIENT);
+	if (unlikely(full)) {
+		spin_unlock_bh(&cq->cq_lock);
 		if (cq->ibcq.event_handler) {
 			ev.device = cq->ibcq.device;
 			ev.element.cq = &cq->ibcq;
@@ -121,10 +123,12 @@ int rxe_cq_post(struct rxe_cq *cq, struct rxe_cqe *cqe, int solicited)
 		return -EBUSY;
 	}
 
-	memcpy(producer_addr(cq->queue), cqe, sizeof(*cqe));
+	addr = queue_producer_addr(cq->queue, QUEUE_TYPE_TO_CLIENT);
+	memcpy(addr, cqe, sizeof(*cqe));
 
-	advance_producer(cq->queue);
-	spin_unlock_irqrestore(&cq->cq_lock, flags);
+	queue_advance_producer(cq->queue, QUEUE_TYPE_TO_CLIENT);
+
+	spin_unlock_bh(&cq->cq_lock);
 
 	if ((cq->notify == IB_CQ_NEXT_COMP) ||
 	    (cq->notify == IB_CQ_SOLICITED && solicited)) {
@@ -137,16 +141,14 @@ int rxe_cq_post(struct rxe_cq *cq, struct rxe_cqe *cqe, int solicited)
 
 void rxe_cq_disable(struct rxe_cq *cq)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&cq->cq_lock, flags);
+	spin_lock_bh(&cq->cq_lock);
 	cq->is_dying = true;
-	spin_unlock_irqrestore(&cq->cq_lock, flags);
+	spin_unlock_bh(&cq->cq_lock);
 }
 
-void rxe_cq_cleanup(struct rxe_pool_entry *arg)
+void rxe_cq_cleanup(struct rxe_pool_elem *elem)
 {
-	struct rxe_cq *cq = container_of(arg, typeof(*cq), pelem);
+	struct rxe_cq *cq = container_of(elem, typeof(*cq), elem);
 
 	if (cq->queue)
 		rxe_queue_cleanup(cq->queue);

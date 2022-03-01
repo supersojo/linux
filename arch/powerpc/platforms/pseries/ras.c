@@ -487,8 +487,8 @@ int pSeries_system_reset_exception(struct pt_regs *regs)
 	if ((be64_to_cpu(regs->msr) &
 			(MSR_LE|MSR_RI|MSR_DR|MSR_IR|MSR_ME|MSR_PR|
 			 MSR_ILE|MSR_HV|MSR_SF)) == (MSR_DR|MSR_SF)) {
-		regs->nip = be64_to_cpu((__be64)regs->nip);
-		regs->msr = 0;
+		regs_set_return_ip(regs, be64_to_cpu((__be64)regs->nip));
+		regs_set_return_msr(regs, 0);
 	}
 #endif
 
@@ -526,6 +526,7 @@ static int mce_handle_err_realmode(int disposition, u8 error_type)
 			disposition = RTAS_DISP_FULLY_RECOVERED;
 			break;
 		case	MC_ERROR_TYPE_SLB:
+#ifdef CONFIG_PPC_64S_HASH_MMU
 			/*
 			 * Store the old slb content in paca before flushing.
 			 * Print this when we go to virtual mode.
@@ -538,6 +539,7 @@ static int mce_handle_err_realmode(int disposition, u8 error_type)
 				slb_save_contents(local_paca->mce_faulty_slbs);
 			flush_and_reload_slb();
 			disposition = RTAS_DISP_FULLY_RECOVERED;
+#endif
 			break;
 		default:
 			break;
@@ -593,8 +595,6 @@ static int mce_handle_err_virtmode(struct pt_regs *regs,
 		mce_err.severity = MCE_SEV_SEVERE;
 	else if (severity == RTAS_SEVERITY_ERROR)
 		mce_err.severity = MCE_SEV_SEVERE;
-	else if (severity == RTAS_SEVERITY_FATAL)
-		mce_err.severity = MCE_SEV_FATAL;
 	else
 		mce_err.severity = MCE_SEV_FATAL;
 
@@ -785,7 +785,7 @@ static int recover_mce(struct pt_regs *regs, struct machine_check_event *evt)
 {
 	int recovered = 0;
 
-	if (!(regs->msr & MSR_RI)) {
+	if (regs_is_unrecoverable(regs)) {
 		/* If MSR_RI isn't set, we cannot recover */
 		pr_err("Machine check interrupt unrecoverable: MSR(RI=0)\n");
 		recovered = 0;

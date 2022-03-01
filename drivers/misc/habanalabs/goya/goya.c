@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /*
- * Copyright 2016-2019 HabanaLabs, Ltd.
+ * Copyright 2016-2021 HabanaLabs, Ltd.
  * All Rights Reserved.
  */
 
@@ -87,6 +87,7 @@
 #define GOYA_PLDM_QMAN0_TIMEOUT_USEC	(HL_DEVICE_TIMEOUT_USEC * 30)
 #define GOYA_BOOT_FIT_REQ_TIMEOUT_USEC	1000000		/* 1s */
 #define GOYA_MSG_TO_CPU_TIMEOUT_USEC	4000000		/* 4s */
+#define GOYA_WAIT_FOR_BL_TIMEOUT_USEC	15000000	/* 15s */
 
 #define GOYA_QMAN0_FENCE_VAL		0xD169B243
 
@@ -349,12 +350,14 @@ static u32 goya_all_events[] = {
 	GOYA_ASYNC_EVENT_ID_FIX_THERMAL_ENV_E
 };
 
+static s64 goya_state_dump_specs_props[SP_MAX] = {0};
+
 static int goya_mmu_clear_pgt_range(struct hl_device *hdev);
 static int goya_mmu_set_dram_default_page(struct hl_device *hdev);
 static int goya_mmu_add_mappings_for_device_cpu(struct hl_device *hdev);
 static void goya_mmu_prepare(struct hl_device *hdev, u32 asid);
 
-int goya_get_fixed_properties(struct hl_device *hdev)
+int goya_set_fixed_properties(struct hl_device *hdev)
 {
 	struct asic_fixed_properties *prop = &hdev->asic_prop;
 	int i;
@@ -386,6 +389,7 @@ int goya_get_fixed_properties(struct hl_device *hdev)
 		prop->hw_queues_props[i].cb_alloc_flags = CB_ALLOC_USER;
 	}
 
+	prop->device_dma_offset_for_host_access = HOST_PHYS_BASE;
 	prop->completion_queues_count = NUMBER_OF_CMPLT_QUEUES;
 
 	prop->dram_base_address = DRAM_PHYS_BASE;
@@ -406,25 +410,26 @@ int goya_get_fixed_properties(struct hl_device *hdev)
 	else
 		prop->mmu_pgt_size = MMU_PAGE_TABLES_SIZE;
 	prop->mmu_pte_size = HL_PTE_SIZE;
-	prop->mmu_hop_table_size = HOP_TABLE_SIZE;
-	prop->mmu_hop0_tables_total_size = HOP0_TABLES_TOTAL_SIZE;
+	prop->mmu_hop_table_size = HOP_TABLE_SIZE_512_PTE;
+	prop->mmu_hop0_tables_total_size = HOP0_512_PTE_TABLES_TOTAL_SIZE;
 	prop->dram_page_size = PAGE_SIZE_2MB;
 	prop->dram_supports_virtual_memory = true;
 
-	prop->dmmu.hop0_shift = HOP0_SHIFT;
-	prop->dmmu.hop1_shift = HOP1_SHIFT;
-	prop->dmmu.hop2_shift = HOP2_SHIFT;
-	prop->dmmu.hop3_shift = HOP3_SHIFT;
-	prop->dmmu.hop4_shift = HOP4_SHIFT;
-	prop->dmmu.hop0_mask = HOP0_MASK;
-	prop->dmmu.hop1_mask = HOP1_MASK;
-	prop->dmmu.hop2_mask = HOP2_MASK;
-	prop->dmmu.hop3_mask = HOP3_MASK;
-	prop->dmmu.hop4_mask = HOP4_MASK;
+	prop->dmmu.hop0_shift = MMU_V1_0_HOP0_SHIFT;
+	prop->dmmu.hop1_shift = MMU_V1_0_HOP1_SHIFT;
+	prop->dmmu.hop2_shift = MMU_V1_0_HOP2_SHIFT;
+	prop->dmmu.hop3_shift = MMU_V1_0_HOP3_SHIFT;
+	prop->dmmu.hop4_shift = MMU_V1_0_HOP4_SHIFT;
+	prop->dmmu.hop0_mask = MMU_V1_0_HOP0_MASK;
+	prop->dmmu.hop1_mask = MMU_V1_0_HOP1_MASK;
+	prop->dmmu.hop2_mask = MMU_V1_0_HOP2_MASK;
+	prop->dmmu.hop3_mask = MMU_V1_0_HOP3_MASK;
+	prop->dmmu.hop4_mask = MMU_V1_0_HOP4_MASK;
 	prop->dmmu.start_addr = VA_DDR_SPACE_START;
 	prop->dmmu.end_addr = VA_DDR_SPACE_END;
 	prop->dmmu.page_size = PAGE_SIZE_2MB;
 	prop->dmmu.num_hops = MMU_ARCH_5_HOPS;
+	prop->dmmu.last_mask = LAST_MASK;
 
 	/* shifts and masks are the same in PMMU and DMMU */
 	memcpy(&prop->pmmu, &prop->dmmu, sizeof(prop->dmmu));
@@ -432,6 +437,7 @@ int goya_get_fixed_properties(struct hl_device *hdev)
 	prop->pmmu.end_addr = VA_HOST_SPACE_END;
 	prop->pmmu.page_size = PAGE_SIZE_4KB;
 	prop->pmmu.num_hops = MMU_ARCH_5_HOPS;
+	prop->pmmu.last_mask = LAST_MASK;
 
 	/* PMMU and HPMMU are the same except of page size */
 	memcpy(&prop->pmmu_huge, &prop->pmmu, sizeof(prop->pmmu));
@@ -460,8 +466,16 @@ int goya_get_fixed_properties(struct hl_device *hdev)
 	for (i = 0 ; i < HL_MAX_DCORES ; i++)
 		prop->first_available_cq[i] = USHRT_MAX;
 
-	prop->fw_security_status_valid = false;
+	prop->fw_cpu_boot_dev_sts0_valid = false;
+	prop->fw_cpu_boot_dev_sts1_valid = false;
 	prop->hard_reset_done_by_fw = false;
+	prop->gic_interrupts_enable = true;
+
+	prop->server_type = HL_SERVER_TYPE_UNKNOWN;
+
+	prop->clk_pll_index = HL_GOYA_MME_PLL;
+
+	prop->use_get_power_for_reset_history = true;
 
 	return 0;
 }
@@ -531,10 +545,8 @@ static int goya_init_iatu(struct hl_device *hdev)
 	struct hl_outbound_pci_region outbound_region;
 	int rc;
 
-	if (hdev->asic_prop.iatu_done_by_fw) {
-		hdev->asic_funcs->set_dma_mask_from_fw(hdev);
+	if (hdev->asic_prop.iatu_done_by_fw)
 		return 0;
-	}
 
 	/* Inbound Region 0 - Bar 0 - Point to SRAM and CFG */
 	inbound_region.mode = PCI_BAR_MATCH_MODE;
@@ -586,7 +598,7 @@ static int goya_early_init(struct hl_device *hdev)
 	u32 fw_boot_status, val;
 	int rc;
 
-	rc = goya_get_fixed_properties(hdev);
+	rc = goya_set_fixed_properties(hdev);
 	if (rc) {
 		dev_err(hdev->dev, "Failed to get fixed properties\n");
 		return rc;
@@ -616,9 +628,10 @@ static int goya_early_init(struct hl_device *hdev)
 	}
 
 	prop->dram_pci_bar_size = pci_resource_len(pdev, DDR_BAR_ID);
+	hdev->dram_pci_bar_start = pci_resource_start(pdev, DDR_BAR_ID);
 
 	/* If FW security is enabled at this point it means no access to ELBI */
-	if (!hdev->asic_prop.fw_security_disabled) {
+	if (hdev->asic_prop.fw_security_enabled) {
 		hdev->asic_prop.iatu_done_by_fw = true;
 		goto pci_init;
 	}
@@ -642,18 +655,20 @@ pci_init:
 	 * version to determine whether we run with a security-enabled firmware
 	 */
 	rc = hl_fw_read_preboot_status(hdev, mmPSOC_GLOBAL_CONF_CPU_BOOT_STATUS,
-			mmCPU_BOOT_DEV_STS0, mmCPU_BOOT_ERR0,
-			GOYA_BOOT_FIT_REQ_TIMEOUT_USEC);
+					mmCPU_BOOT_DEV_STS0,
+					mmCPU_BOOT_DEV_STS1, mmCPU_BOOT_ERR0,
+					mmCPU_BOOT_ERR1,
+					GOYA_BOOT_FIT_REQ_TIMEOUT_USEC);
 	if (rc) {
 		if (hdev->reset_on_preboot_fail)
-			hdev->asic_funcs->hw_fini(hdev, true);
+			hdev->asic_funcs->hw_fini(hdev, true, false);
 		goto pci_fini;
 	}
 
 	if (goya_get_hw_state(hdev) == HL_DEVICE_HW_STATE_DIRTY) {
 		dev_info(hdev->dev,
 			"H/W state is dirty, must reset before initializing\n");
-		hdev->asic_funcs->hw_fini(hdev, true);
+		hdev->asic_funcs->hw_fini(hdev, true, false);
 	}
 
 	if (!hdev->pldm) {
@@ -723,7 +738,20 @@ static void goya_fetch_psoc_frequency(struct hl_device *hdev)
 	u16 pll_freq_arr[HL_PLL_NUM_OUTPUTS], freq;
 	int rc;
 
-	if (hdev->asic_prop.fw_security_disabled) {
+	if (hdev->asic_prop.fw_security_enabled) {
+		struct goya_device *goya = hdev->asic_specific;
+
+		if (!(goya->hw_cap_initialized & HW_CAP_CPU_Q))
+			return;
+
+		rc = hl_fw_cpucp_pll_info_get(hdev, HL_GOYA_PCI_PLL,
+				pll_freq_arr);
+
+		if (rc)
+			return;
+
+		freq = pll_freq_arr[1];
+	} else {
 		div_fctr = RREG32(mmPSOC_PCI_PLL_DIV_FACTOR_1);
 		div_sel = RREG32(mmPSOC_PCI_PLL_DIV_SEL_1);
 		nr = RREG32(mmPSOC_PCI_PLL_NR);
@@ -750,14 +778,6 @@ static void goya_fetch_psoc_frequency(struct hl_device *hdev)
 				div_sel);
 			freq = 0;
 		}
-	} else {
-		rc = hl_fw_cpucp_pll_info_get(hdev, HL_GOYA_PCI_PLL,
-				pll_freq_arr);
-
-		if (rc)
-			return;
-
-		freq = pll_freq_arr[1];
 	}
 
 	prop->psoc_timestamp_frequency = freq;
@@ -767,9 +787,59 @@ static void goya_fetch_psoc_frequency(struct hl_device *hdev)
 	prop->psoc_pci_pll_div_factor = div_fctr;
 }
 
+/*
+ * goya_set_frequency - set the frequency of the device
+ *
+ * @hdev: pointer to habanalabs device structure
+ * @freq: the new frequency value
+ *
+ * Change the frequency if needed. This function has no protection against
+ * concurrency, therefore it is assumed that the calling function has protected
+ * itself against the case of calling this function from multiple threads with
+ * different values
+ *
+ * Returns 0 if no change was done, otherwise returns 1
+ */
+int goya_set_frequency(struct hl_device *hdev, enum hl_pll_frequency freq)
+{
+	struct goya_device *goya = hdev->asic_specific;
+
+	if ((goya->pm_mng_profile == PM_MANUAL) ||
+			(goya->curr_pll_profile == freq))
+		return 0;
+
+	dev_dbg(hdev->dev, "Changing device frequency to %s\n",
+		freq == PLL_HIGH ? "high" : "low");
+
+	goya_set_pll_profile(hdev, freq);
+
+	goya->curr_pll_profile = freq;
+
+	return 1;
+}
+
+static void goya_set_freq_to_low_job(struct work_struct *work)
+{
+	struct goya_work_freq *goya_work = container_of(work,
+						struct goya_work_freq,
+						work_freq.work);
+	struct hl_device *hdev = goya_work->hdev;
+
+	mutex_lock(&hdev->fpriv_list_lock);
+
+	if (!hdev->is_compute_ctx_active)
+		goya_set_frequency(hdev, PLL_LOW);
+
+	mutex_unlock(&hdev->fpriv_list_lock);
+
+	schedule_delayed_work(&goya_work->work_freq,
+			usecs_to_jiffies(HL_PLL_LOW_JOB_FREQ_USEC));
+}
+
 int goya_late_init(struct hl_device *hdev)
 {
 	struct asic_fixed_properties *prop = &hdev->asic_prop;
+	struct goya_device *goya = hdev->asic_specific;
 	int rc;
 
 	goya_fetch_psoc_frequency(hdev);
@@ -818,6 +888,16 @@ int goya_late_init(struct hl_device *hdev)
 		return rc;
 	}
 
+	/* force setting to low frequency */
+	goya->curr_pll_profile = PLL_LOW;
+
+	goya->pm_mng_profile = PM_AUTO;
+
+	hdev->asic_funcs->set_pll_profile(hdev, PLL_LOW);
+
+	schedule_delayed_work(&goya->goya_work->work_freq,
+		usecs_to_jiffies(HL_PLL_LOW_JOB_FREQ_USEC));
+
 	return 0;
 }
 
@@ -831,7 +911,10 @@ int goya_late_init(struct hl_device *hdev)
 void goya_late_fini(struct hl_device *hdev)
 {
 	const struct hwmon_channel_info **channel_info_arr;
+	struct goya_device *goya = hdev->asic_specific;
 	int i = 0;
+
+	cancel_delayed_work_sync(&goya->goya_work->work_freq);
 
 	if (!hdev->hl_chip_info->info)
 		return;
@@ -847,6 +930,39 @@ void goya_late_fini(struct hl_device *hdev)
 	kfree(channel_info_arr);
 
 	hdev->hl_chip_info->info = NULL;
+}
+
+static void goya_set_pci_memory_regions(struct hl_device *hdev)
+{
+	struct asic_fixed_properties *prop = &hdev->asic_prop;
+	struct pci_mem_region *region;
+
+	/* CFG */
+	region = &hdev->pci_mem_region[PCI_REGION_CFG];
+	region->region_base = CFG_BASE;
+	region->region_size = CFG_SIZE;
+	region->offset_in_bar = CFG_BASE - SRAM_BASE_ADDR;
+	region->bar_size = CFG_BAR_SIZE;
+	region->bar_id = SRAM_CFG_BAR_ID;
+	region->used = 1;
+
+	/* SRAM */
+	region = &hdev->pci_mem_region[PCI_REGION_SRAM];
+	region->region_base = SRAM_BASE_ADDR;
+	region->region_size = SRAM_SIZE;
+	region->offset_in_bar = 0;
+	region->bar_size = CFG_BAR_SIZE;
+	region->bar_id = SRAM_CFG_BAR_ID;
+	region->used = 1;
+
+	/* DRAM */
+	region = &hdev->pci_mem_region[PCI_REGION_DRAM];
+	region->region_base = DRAM_PHYS_BASE;
+	region->region_size = hdev->asic_prop.dram_size;
+	region->offset_in_bar = 0;
+	region->bar_size = prop->dram_pci_bar_size;
+	region->bar_id = DDR_BAR_ID;
+	region->used = 1;
 }
 
 /*
@@ -917,7 +1033,20 @@ static int goya_sw_init(struct hl_device *hdev)
 
 	spin_lock_init(&goya->hw_queues_lock);
 	hdev->supports_coresight = true;
-	hdev->supports_soft_reset = true;
+	hdev->asic_prop.supports_soft_reset = true;
+	hdev->asic_prop.allow_inference_soft_reset = true;
+	hdev->supports_wait_for_multi_cs = false;
+
+	hdev->asic_funcs->set_pci_memory_regions(hdev);
+
+	goya->goya_work = kmalloc(sizeof(struct goya_work_freq), GFP_KERNEL);
+	if (!goya->goya_work) {
+		rc = -ENOMEM;
+		goto free_cpu_accessible_dma_pool;
+	}
+
+	goya->goya_work->hdev = hdev;
+	INIT_DELAYED_WORK(&goya->goya_work->work_freq, goya_set_freq_to_low_job);
 
 	return 0;
 
@@ -955,6 +1084,7 @@ static int goya_sw_fini(struct hl_device *hdev)
 
 	dma_pool_destroy(hdev->dma_pool);
 
+	kfree(goya->goya_work);
 	kfree(goya);
 
 	return 0;
@@ -1263,8 +1393,11 @@ int goya_init_cpu_queues(struct hl_device *hdev)
 	}
 
 	/* update FW application security bits */
-	if (prop->fw_security_status_valid)
-		prop->fw_app_security_map = RREG32(mmCPU_BOOT_DEV_STS0);
+	if (prop->fw_cpu_boot_dev_sts0_valid)
+		prop->fw_app_cpu_boot_dev_sts0 = RREG32(mmCPU_BOOT_DEV_STS0);
+
+	if (prop->fw_cpu_boot_dev_sts1_valid)
+		prop->fw_app_cpu_boot_dev_sts1 = RREG32(mmCPU_BOOT_DEV_STS1);
 
 	goya->hw_cap_initialized |= HW_CAP_CPU_Q;
 	return 0;
@@ -2332,7 +2465,7 @@ static void goya_disable_timestamp(struct hl_device *hdev)
 	WREG32(mmPSOC_TIMESTAMP_BASE - CFG_BASE, 0);
 }
 
-static void goya_halt_engines(struct hl_device *hdev, bool hard_reset)
+static void goya_halt_engines(struct hl_device *hdev, bool hard_reset, bool fw_reset)
 {
 	u32 wait_timeout_ms;
 
@@ -2402,47 +2535,68 @@ static int goya_load_boot_fit_to_device(struct hl_device *hdev)
 	return hl_fw_load_fw_to_device(hdev, GOYA_BOOT_FIT_FILE, dst, 0, 0);
 }
 
-/*
- * FW component passes an offset from SRAM_BASE_ADDR in SCRATCHPAD_xx.
- * The version string should be located by that offset.
- */
-static int goya_read_device_fw_version(struct hl_device *hdev,
-					enum hl_fw_component fwc)
+static void goya_init_dynamic_firmware_loader(struct hl_device *hdev)
 {
-	const char *name;
-	u32 ver_off;
-	char *dest;
+	struct dynamic_fw_load_mgr *dynamic_loader;
+	struct cpu_dyn_regs *dyn_regs;
 
-	switch (fwc) {
-	case FW_COMP_UBOOT:
-		ver_off = RREG32(mmUBOOT_VER_OFFSET);
-		dest = hdev->asic_prop.uboot_ver;
-		name = "U-Boot";
-		break;
-	case FW_COMP_PREBOOT:
-		ver_off = RREG32(mmPREBOOT_VER_OFFSET);
-		dest = hdev->asic_prop.preboot_ver;
-		name = "Preboot";
-		break;
-	default:
-		dev_warn(hdev->dev, "Undefined FW component: %d\n", fwc);
-		return -EIO;
-	}
+	dynamic_loader = &hdev->fw_loader.dynamic_loader;
 
-	ver_off &= ~((u32)SRAM_BASE_ADDR);
+	/*
+	 * here we update initial values for few specific dynamic regs (as
+	 * before reading the first descriptor from FW those value has to be
+	 * hard-coded) in later stages of the protocol those values will be
+	 * updated automatically by reading the FW descriptor so data there
+	 * will always be up-to-date
+	 */
+	dyn_regs = &dynamic_loader->comm_desc.cpu_dyn_regs;
+	dyn_regs->kmd_msg_to_cpu =
+				cpu_to_le32(mmPSOC_GLOBAL_CONF_KMD_MSG_TO_CPU);
+	dyn_regs->cpu_cmd_status_to_host =
+				cpu_to_le32(mmCPU_CMD_STATUS_TO_HOST);
 
-	if (ver_off < SRAM_SIZE - VERSION_MAX_LEN) {
-		memcpy_fromio(dest, hdev->pcie_bar[SRAM_CFG_BAR_ID] + ver_off,
-							VERSION_MAX_LEN);
-	} else {
-		dev_err(hdev->dev, "%s version offset (0x%x) is above SRAM\n",
-								name, ver_off);
-		strcpy(dest, "unavailable");
+	dynamic_loader->wait_for_bl_timeout = GOYA_WAIT_FOR_BL_TIMEOUT_USEC;
+}
 
-		return -EIO;
-	}
+static void goya_init_static_firmware_loader(struct hl_device *hdev)
+{
+	struct static_fw_load_mgr *static_loader;
 
-	return 0;
+	static_loader = &hdev->fw_loader.static_loader;
+
+	static_loader->preboot_version_max_off = SRAM_SIZE - VERSION_MAX_LEN;
+	static_loader->boot_fit_version_max_off = SRAM_SIZE - VERSION_MAX_LEN;
+	static_loader->kmd_msg_to_cpu_reg = mmPSOC_GLOBAL_CONF_KMD_MSG_TO_CPU;
+	static_loader->cpu_cmd_status_to_host_reg = mmCPU_CMD_STATUS_TO_HOST;
+	static_loader->cpu_boot_status_reg = mmPSOC_GLOBAL_CONF_CPU_BOOT_STATUS;
+	static_loader->cpu_boot_dev_status0_reg = mmCPU_BOOT_DEV_STS0;
+	static_loader->cpu_boot_dev_status1_reg = mmCPU_BOOT_DEV_STS1;
+	static_loader->boot_err0_reg = mmCPU_BOOT_ERR0;
+	static_loader->boot_err1_reg = mmCPU_BOOT_ERR1;
+	static_loader->preboot_version_offset_reg = mmPREBOOT_VER_OFFSET;
+	static_loader->boot_fit_version_offset_reg = mmUBOOT_VER_OFFSET;
+	static_loader->sram_offset_mask = ~(lower_32_bits(SRAM_BASE_ADDR));
+}
+
+static void goya_init_firmware_loader(struct hl_device *hdev)
+{
+	struct asic_fixed_properties *prop = &hdev->asic_prop;
+	struct fw_load_mgr *fw_loader = &hdev->fw_loader;
+
+	/* fill common fields */
+	fw_loader->fw_comp_loaded = FW_TYPE_NONE;
+	fw_loader->boot_fit_img.image_name = GOYA_BOOT_FIT_FILE;
+	fw_loader->linux_img.image_name = GOYA_LINUX_FW_FILE;
+	fw_loader->cpu_timeout = GOYA_CPU_TIMEOUT_USEC;
+	fw_loader->boot_fit_timeout = GOYA_BOOT_FIT_REQ_TIMEOUT_USEC;
+	fw_loader->skip_bmc = false;
+	fw_loader->sram_bar_id = SRAM_CFG_BAR_ID;
+	fw_loader->dram_bar_id = DDR_BAR_ID;
+
+	if (prop->dynamic_fw_load)
+		goya_init_dynamic_firmware_loader(hdev);
+	else
+		goya_init_static_firmware_loader(hdev);
 }
 
 static int goya_init_cpu(struct hl_device *hdev)
@@ -2466,12 +2620,7 @@ static int goya_init_cpu(struct hl_device *hdev)
 		return -EIO;
 	}
 
-	rc = hl_fw_init_cpu(hdev, mmPSOC_GLOBAL_CONF_CPU_BOOT_STATUS,
-			mmPSOC_GLOBAL_CONF_UBOOT_MAGIC,
-			mmCPU_CMD_STATUS_TO_HOST,
-			mmCPU_BOOT_DEV_STS0, mmCPU_BOOT_ERR0,
-			false, GOYA_CPU_TIMEOUT_USEC,
-			GOYA_BOOT_FIT_REQ_TIMEOUT_USEC);
+	rc = hl_fw_init_cpu(hdev);
 
 	if (rc)
 		return rc;
@@ -2552,7 +2701,7 @@ int goya_mmu_init(struct hl_device *hdev)
 			(~STLB_STLB_FEATURE_EN_FOLLOWER_EN_MASK));
 
 	hdev->asic_funcs->mmu_invalidate_cache(hdev, true,
-					VM_TYPE_USERPTR | VM_TYPE_PHYS_PACK);
+					MMU_OP_USERPTR | MMU_OP_PHYS_PACK);
 
 	WREG32(mmMMU_MMU_ENABLE, 1);
 	WREG32(mmMMU_SPI_MASK, 0xF);
@@ -2639,14 +2788,7 @@ disable_queues:
 	return rc;
 }
 
-/*
- * goya_hw_fini - Goya hardware tear-down code
- *
- * @hdev: pointer to hl_device structure
- * @hard_reset: should we do hard reset to all engines or just reset the
- *              compute/dma engines
- */
-static void goya_hw_fini(struct hl_device *hdev, bool hard_reset)
+static void goya_hw_fini(struct hl_device *hdev, bool hard_reset, bool fw_reset)
 {
 	struct goya_device *goya = hdev->asic_specific;
 	u32 reset_timeout_ms, cpu_timeout_ms, status;
@@ -2739,7 +2881,7 @@ int goya_resume(struct hl_device *hdev)
 	return goya_init_iatu(hdev);
 }
 
-static int goya_cb_mmap(struct hl_device *hdev, struct vm_area_struct *vma,
+static int goya_mmap(struct hl_device *hdev, struct vm_area_struct *vma,
 			void *cpu_addr, dma_addr_t dma_addr, size_t size)
 {
 	int rc;
@@ -2881,7 +3023,7 @@ void *goya_get_int_queue_base(struct hl_device *hdev, u32 queue_id,
 
 	*dma_handle = hdev->asic_prop.sram_base_address;
 
-	base = (void *) hdev->pcie_bar[SRAM_CFG_BAR_ID];
+	base = (__force void *) hdev->pcie_bar[SRAM_CFG_BAR_ID];
 
 	switch (queue_id) {
 	case GOYA_QUEUE_ID_MME:
@@ -3270,6 +3412,7 @@ already_pinned:
 	return 0;
 
 unpin_memory:
+	list_del(&userptr->job_node);
 	hl_unpin_host_memory(hdev, userptr);
 free_userptr:
 	kfree(userptr);
@@ -4334,7 +4477,7 @@ static u64 goya_read_pte(struct hl_device *hdev, u64 addr)
 {
 	struct goya_device *goya = hdev->asic_specific;
 
-	if (hdev->hard_reset_pending)
+	if (hdev->reset_info.hard_reset_pending)
 		return U64_MAX;
 
 	return readq(hdev->pcie_bar[DDR_BAR_ID] +
@@ -4345,7 +4488,7 @@ static void goya_write_pte(struct hl_device *hdev, u64 addr, u64 val)
 {
 	struct goya_device *goya = hdev->asic_specific;
 
-	if (hdev->hard_reset_pending)
+	if (hdev->reset_info.hard_reset_pending)
 		return;
 
 	writeq(val, hdev->pcie_bar[DDR_BAR_ID] +
@@ -4670,7 +4813,7 @@ static int goya_unmask_irq_arr(struct hl_device *hdev, u32 *irq_arr,
 	return rc;
 }
 
-static int goya_soft_reset_late_init(struct hl_device *hdev)
+static int goya_non_hard_reset_late_init(struct hl_device *hdev)
 {
 	/*
 	 * Unmask all IRQs since some could have been received
@@ -4703,24 +4846,39 @@ static int goya_unmask_irq(struct hl_device *hdev, u16 event_type)
 
 static void goya_print_clk_change_info(struct hl_device *hdev, u16 event_type)
 {
+	ktime_t zero_time = ktime_set(0, 0);
+
+	mutex_lock(&hdev->clk_throttling.lock);
+
 	switch (event_type) {
 	case GOYA_ASYNC_EVENT_ID_FIX_POWER_ENV_S:
-		hdev->clk_throttling_reason |= HL_CLK_THROTTLE_POWER;
+		hdev->clk_throttling.current_reason |= HL_CLK_THROTTLE_POWER;
+		hdev->clk_throttling.aggregated_reason |= HL_CLK_THROTTLE_POWER;
+		hdev->clk_throttling.timestamp[HL_CLK_THROTTLE_TYPE_POWER].start = ktime_get();
+		hdev->clk_throttling.timestamp[HL_CLK_THROTTLE_TYPE_POWER].end = zero_time;
 		dev_info_ratelimited(hdev->dev,
 			"Clock throttling due to power consumption\n");
 		break;
+
 	case GOYA_ASYNC_EVENT_ID_FIX_POWER_ENV_E:
-		hdev->clk_throttling_reason &= ~HL_CLK_THROTTLE_POWER;
+		hdev->clk_throttling.current_reason &= ~HL_CLK_THROTTLE_POWER;
+		hdev->clk_throttling.timestamp[HL_CLK_THROTTLE_TYPE_POWER].end = ktime_get();
 		dev_info_ratelimited(hdev->dev,
 			"Power envelop is safe, back to optimal clock\n");
 		break;
+
 	case GOYA_ASYNC_EVENT_ID_FIX_THERMAL_ENV_S:
-		hdev->clk_throttling_reason |= HL_CLK_THROTTLE_THERMAL;
+		hdev->clk_throttling.current_reason |= HL_CLK_THROTTLE_THERMAL;
+		hdev->clk_throttling.aggregated_reason |= HL_CLK_THROTTLE_THERMAL;
+		hdev->clk_throttling.timestamp[HL_CLK_THROTTLE_TYPE_THERMAL].start = ktime_get();
+		hdev->clk_throttling.timestamp[HL_CLK_THROTTLE_TYPE_THERMAL].end = zero_time;
 		dev_info_ratelimited(hdev->dev,
 			"Clock throttling due to overheating\n");
 		break;
+
 	case GOYA_ASYNC_EVENT_ID_FIX_THERMAL_ENV_E:
-		hdev->clk_throttling_reason &= ~HL_CLK_THROTTLE_THERMAL;
+		hdev->clk_throttling.current_reason &= ~HL_CLK_THROTTLE_THERMAL;
+		hdev->clk_throttling.timestamp[HL_CLK_THROTTLE_TYPE_THERMAL].end = ktime_get();
 		dev_info_ratelimited(hdev->dev,
 			"Thermal envelop is safe, back to optimal clock\n");
 		break;
@@ -4730,6 +4888,8 @@ static void goya_print_clk_change_info(struct hl_device *hdev, u16 event_type)
 			event_type);
 		break;
 	}
+
+	mutex_unlock(&hdev->clk_throttling.lock);
 }
 
 void goya_handle_eqe(struct hl_device *hdev, struct hl_eq_entry *eq_entry)
@@ -4738,6 +4898,12 @@ void goya_handle_eqe(struct hl_device *hdev, struct hl_eq_entry *eq_entry)
 	u16 event_type = ((ctl & EQ_CTL_EVENT_TYPE_MASK)
 				>> EQ_CTL_EVENT_TYPE_SHIFT);
 	struct goya_device *goya = hdev->asic_specific;
+
+	if (event_type >= GOYA_ASYNC_EVENT_ID_SIZE) {
+		dev_err(hdev->dev, "Event type %u exceeds maximum of %u",
+				event_type, GOYA_ASYNC_EVENT_ID_SIZE - 1);
+		return;
+	}
 
 	goya->events_stat[event_type]++;
 	goya->events_stat_aggregate[event_type]++;
@@ -4765,10 +4931,16 @@ void goya_handle_eqe(struct hl_device *hdev, struct hl_eq_entry *eq_entry)
 	case GOYA_ASYNC_EVENT_ID_PLL0 ... GOYA_ASYNC_EVENT_ID_PLL6:
 	case GOYA_ASYNC_EVENT_ID_AXI_ECC:
 	case GOYA_ASYNC_EVENT_ID_L2_RAM_ECC:
+		goya_print_irq_info(hdev, event_type, false);
+		if (hdev->hard_reset_on_fw_events)
+			hl_device_reset(hdev, (HL_DRV_RESET_HARD |
+						HL_DRV_RESET_FW_FATAL_ERR));
+		break;
+
 	case GOYA_ASYNC_EVENT_ID_PSOC_GPIO_05_SW_RESET:
 		goya_print_irq_info(hdev, event_type, false);
 		if (hdev->hard_reset_on_fw_events)
-			hl_device_reset(hdev, HL_RESET_HARD);
+			hl_device_reset(hdev, HL_DRV_RESET_HARD);
 		break;
 
 	case GOYA_ASYNC_EVENT_ID_PCIE_DEC:
@@ -4828,7 +5000,7 @@ void goya_handle_eqe(struct hl_device *hdev, struct hl_eq_entry *eq_entry)
 		goya_print_irq_info(hdev, event_type, false);
 		goya_print_out_of_sync_info(hdev, &eq_entry->pkt_sync_err);
 		if (hdev->hard_reset_on_fw_events)
-			hl_device_reset(hdev, HL_RESET_HARD);
+			hl_device_reset(hdev, HL_DRV_RESET_HARD);
 		else
 			hl_fw_unmask_irq(hdev, event_type);
 		break;
@@ -5136,7 +5308,7 @@ static int goya_mmu_invalidate_cache(struct hl_device *hdev, bool is_hard,
 	int rc;
 
 	if (!(goya->hw_cap_initialized & HW_CAP_MMU) ||
-		hdev->hard_reset_pending)
+		hdev->reset_info.hard_reset_pending)
 		return 0;
 
 	/* no need in L1 only invalidation in Goya */
@@ -5159,64 +5331,17 @@ static int goya_mmu_invalidate_cache(struct hl_device *hdev, bool is_hard,
 		1000,
 		timeout_usec);
 
-	if (rc) {
-		dev_err_ratelimited(hdev->dev,
-					"MMU cache invalidation timeout\n");
-		hl_device_reset(hdev, HL_RESET_HARD);
-	}
-
 	return rc;
 }
 
 static int goya_mmu_invalidate_cache_range(struct hl_device *hdev,
-				bool is_hard, u32 asid, u64 va, u64 size)
+						bool is_hard, u32 flags,
+						u32 asid, u64 va, u64 size)
 {
-	struct goya_device *goya = hdev->asic_specific;
-	u32 status, timeout_usec, inv_data, pi;
-	int rc;
-
-	if (!(goya->hw_cap_initialized & HW_CAP_MMU) ||
-		hdev->hard_reset_pending)
-		return 0;
-
-	/* no need in L1 only invalidation in Goya */
-	if (!is_hard)
-		return 0;
-
-	if (hdev->pldm)
-		timeout_usec = GOYA_PLDM_MMU_TIMEOUT_USEC;
-	else
-		timeout_usec = MMU_CONFIG_TIMEOUT_USEC;
-
-	/*
-	 * TODO: currently invalidate entire L0 & L1 as in regular hard
-	 * invalidation. Need to apply invalidation of specific cache lines with
-	 * mask of ASID & VA & size.
-	 * Note that L1 with be flushed entirely in any case.
+	/* Treat as invalidate all because there is no range invalidation
+	 * in Goya
 	 */
-
-	/* L0 & L1 invalidation */
-	inv_data = RREG32(mmSTLB_CACHE_INV);
-	/* PI is 8 bit */
-	pi = ((inv_data & STLB_CACHE_INV_PRODUCER_INDEX_MASK) + 1) & 0xFF;
-	WREG32(mmSTLB_CACHE_INV,
-			(inv_data & STLB_CACHE_INV_INDEX_MASK_MASK) | pi);
-
-	rc = hl_poll_timeout(
-		hdev,
-		mmSTLB_INV_CONSUMER_INDEX,
-		status,
-		status == pi,
-		1000,
-		timeout_usec);
-
-	if (rc) {
-		dev_err_ratelimited(hdev->dev,
-					"MMU cache invalidation timeout\n");
-		hl_device_reset(hdev, HL_RESET_HARD);
-	}
-
-	return rc;
+	return hdev->asic_funcs->mmu_invalidate_cache(hdev, is_hard, flags);
 }
 
 int goya_send_heartbeat(struct hl_device *hdev)
@@ -5239,7 +5364,9 @@ int goya_cpucp_info_get(struct hl_device *hdev)
 	if (!(goya->hw_cap_initialized & HW_CAP_CPU_Q))
 		return 0;
 
-	rc = hl_fw_cpucp_handshake(hdev, mmCPU_BOOT_DEV_STS0, mmCPU_BOOT_ERR0);
+	rc = hl_fw_cpucp_handshake(hdev, mmCPU_BOOT_DEV_STS0,
+					mmCPU_BOOT_DEV_STS1, mmCPU_BOOT_ERR0,
+					mmCPU_BOOT_ERR1);
 	if (rc)
 		return rc;
 
@@ -5385,6 +5512,11 @@ static int goya_get_eeprom_data(struct hl_device *hdev, void *data,
 	return hl_fw_get_eeprom_data(hdev, data, max_size);
 }
 
+static void goya_cpu_init_scrambler_dram(struct hl_device *hdev)
+{
+
+}
+
 static int goya_ctx_init(struct hl_ctx *ctx)
 {
 	if (ctx->asid != HL_KERNEL_ASID_ID)
@@ -5451,14 +5583,14 @@ u64 goya_get_device_time(struct hl_device *hdev)
 	return device_time | RREG32(mmPSOC_TIMESTAMP_CNTCVL);
 }
 
-static void goya_collective_wait_init_cs(struct hl_cs *cs)
+static int goya_collective_wait_init_cs(struct hl_cs *cs)
 {
-
+	return 0;
 }
 
 static int goya_collective_wait_create_jobs(struct hl_device *hdev,
 		struct hl_ctx *ctx, struct hl_cs *cs, u32 wait_queue_id,
-		u32 collective_engine_id)
+		u32 collective_engine_id, u32 encaps_signal_offset)
 {
 	return -EINVAL;
 }
@@ -5500,6 +5632,62 @@ static int goya_map_pll_idx_to_fw_idx(u32 pll_idx)
 	}
 }
 
+static int goya_gen_sync_to_engine_map(struct hl_device *hdev,
+				struct hl_sync_to_engine_map *map)
+{
+	/* Not implemented */
+	return 0;
+}
+
+static int goya_monitor_valid(struct hl_mon_state_dump *mon)
+{
+	/* Not implemented */
+	return 0;
+}
+
+static int goya_print_single_monitor(char **buf, size_t *size, size_t *offset,
+				struct hl_device *hdev,
+				struct hl_mon_state_dump *mon)
+{
+	/* Not implemented */
+	return 0;
+}
+
+
+static int goya_print_fences_single_engine(
+	struct hl_device *hdev, u64 base_offset, u64 status_base_offset,
+	enum hl_sync_engine_type engine_type, u32 engine_id, char **buf,
+	size_t *size, size_t *offset)
+{
+	/* Not implemented */
+	return 0;
+}
+
+
+static struct hl_state_dump_specs_funcs goya_state_dump_funcs = {
+	.monitor_valid = goya_monitor_valid,
+	.print_single_monitor = goya_print_single_monitor,
+	.gen_sync_to_engine_map = goya_gen_sync_to_engine_map,
+	.print_fences_single_engine = goya_print_fences_single_engine,
+};
+
+static void goya_state_dump_init(struct hl_device *hdev)
+{
+	/* Not implemented */
+	hdev->state_dump_specs.props = goya_state_dump_specs_props;
+	hdev->state_dump_specs.funcs = goya_state_dump_funcs;
+}
+
+static u32 goya_get_sob_addr(struct hl_device *hdev, u32 sob_id)
+{
+	return 0;
+}
+
+static u32 *goya_get_stream_master_qid_arr(void)
+{
+	return NULL;
+}
+
 static const struct hl_asic_funcs goya_funcs = {
 	.early_init = goya_early_init,
 	.early_fini = goya_early_fini,
@@ -5512,7 +5700,7 @@ static const struct hl_asic_funcs goya_funcs = {
 	.halt_engines = goya_halt_engines,
 	.suspend = goya_suspend,
 	.resume = goya_resume,
-	.cb_mmap = goya_cb_mmap,
+	.mmap = goya_mmap,
 	.ring_doorbell = goya_ring_doorbell,
 	.pqe_write = goya_pqe_write,
 	.asic_dma_alloc_coherent = goya_dma_alloc_coherent,
@@ -5550,7 +5738,7 @@ static const struct hl_asic_funcs goya_funcs = {
 	.disable_clock_gating = goya_disable_clock_gating,
 	.debug_coresight = goya_debug_coresight,
 	.is_device_idle = goya_is_device_idle,
-	.soft_reset_late_init = goya_soft_reset_late_init,
+	.non_hard_reset_late_init = goya_non_hard_reset_late_init,
 	.hw_queues_lock = goya_hw_queues_lock,
 	.hw_queues_unlock = goya_hw_queues_unlock,
 	.get_pci_id = goya_get_pci_id,
@@ -5563,9 +5751,8 @@ static const struct hl_asic_funcs goya_funcs = {
 	.halt_coresight = goya_halt_coresight,
 	.ctx_init = goya_ctx_init,
 	.ctx_fini = goya_ctx_fini,
-	.get_clk_rate = goya_get_clk_rate,
+	.get_clk_rate = hl_get_clk_rate,
 	.get_queue_id_for_cq = goya_get_queue_id_for_cq,
-	.read_device_fw_version = goya_read_device_fw_version,
 	.load_firmware_to_device = goya_load_firmware_to_device,
 	.load_boot_fit_to_device = goya_load_boot_fit_to_device,
 	.get_signal_cb_size = goya_get_signal_cb_size,
@@ -5584,7 +5771,13 @@ static const struct hl_asic_funcs goya_funcs = {
 	.get_hw_block_id = goya_get_hw_block_id,
 	.hw_block_mmap = goya_block_mmap,
 	.enable_events_from_fw = goya_enable_events_from_fw,
-	.map_pll_idx_to_fw_idx = goya_map_pll_idx_to_fw_idx
+	.map_pll_idx_to_fw_idx = goya_map_pll_idx_to_fw_idx,
+	.init_firmware_loader = goya_init_firmware_loader,
+	.init_cpu_scrambler_dram = goya_cpu_init_scrambler_dram,
+	.state_dump_init = goya_state_dump_init,
+	.get_sob_addr = &goya_get_sob_addr,
+	.set_pci_memory_regions = goya_set_pci_memory_regions,
+	.get_stream_master_qid_arr = goya_get_stream_master_qid_arr,
 };
 
 /*

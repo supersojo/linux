@@ -40,6 +40,7 @@
 
 #include <linux/slab.h>
 #include "pm8001_sas.h"
+#include "pm80xx_tracepoints.h"
 
 /**
  * pm8001_find_tag - from sas task to find out  tag that belongs to this task
@@ -98,14 +99,16 @@ void pm8001_tag_init(struct pm8001_hba_info *pm8001_ha)
 		pm8001_tag_free(pm8001_ha, i);
 }
 
- /**
-  * pm8001_mem_alloc - allocate memory for pm8001.
-  * @pdev: pci device.
-  * @virt_addr: the allocated virtual address
-  * @pphys_addr_hi: the physical address high byte address.
-  * @pphys_addr_lo: the physical address low byte address.
-  * @mem_size: memory size.
-  */
+/**
+ * pm8001_mem_alloc - allocate memory for pm8001.
+ * @pdev: pci device.
+ * @virt_addr: the allocated virtual address
+ * @pphys_addr: DMA address for this device
+ * @pphys_addr_hi: the physical address high byte address.
+ * @pphys_addr_lo: the physical address low byte address.
+ * @mem_size: memory size.
+ * @align: requested byte alignment
+ */
 int pm8001_mem_alloc(struct pci_dev *pdev, void **virt_addr,
 	dma_addr_t *pphys_addr, u32 *pphys_addr_hi,
 	u32 *pphys_addr_lo, u32 mem_size, u32 align)
@@ -118,10 +121,8 @@ int pm8001_mem_alloc(struct pci_dev *pdev, void **virt_addr,
 		align_offset = (dma_addr_t)align - 1;
 	mem_virt_alloc = dma_alloc_coherent(&pdev->dev, mem_size + align,
 					    &mem_dma_handle, GFP_KERNEL);
-	if (!mem_virt_alloc) {
-		pr_err("pm80xx: memory allocation error\n");
-		return -1;
-	}
+	if (!mem_virt_alloc)
+		return -ENOMEM;
 	*pphys_addr = mem_dma_handle;
 	phys_align = (*pphys_addr + align_offset) & ~align_offset;
 	*virt_addr = (void *)mem_virt_alloc + phys_align - *pphys_addr;
@@ -341,7 +342,7 @@ static int pm8001_task_prep_ssp_tm(struct pm8001_hba_info *pm8001_ha,
 }
 
 /**
-  * pm8001_task_prep_ssp - the dispatcher function,prepare ssp data for ssp task
+  * pm8001_task_prep_ssp - the dispatcher function, prepare ssp data for ssp task
   * @pm8001_ha: our hba card information
   * @ccb: the ccb which attached to ssp task
   */
@@ -527,6 +528,9 @@ int pm8001_queue_command(struct sas_task *task, gfp_t gfp_flags)
 void pm8001_ccb_task_free(struct pm8001_hba_info *pm8001_ha,
 	struct sas_task *task, struct pm8001_ccb_info *ccb, u32 ccb_idx)
 {
+	struct ata_queued_cmd *qc;
+	struct pm8001_device *pm8001_dev;
+
 	if (!ccb->task)
 		return;
 	if (!sas_protocol_ata(task->task_proto))
@@ -549,6 +553,18 @@ void pm8001_ccb_task_free(struct pm8001_hba_info *pm8001_ha,
 		/* do nothing */
 		break;
 	}
+
+	if (sas_protocol_ata(task->task_proto)) {
+		// For SCSI/ATA commands uldd_task points to ata_queued_cmd
+		qc = task->uldd_task;
+		pm8001_dev = ccb->device;
+		trace_pm80xx_request_complete(pm8001_ha->id,
+			pm8001_dev ? pm8001_dev->attached_phy : PM8001_MAX_PHYS,
+			ccb_idx, 0 /* ctlr_opcode not known */,
+			qc ? qc->tf.command : 0, // ata opcode
+			pm8001_dev ? atomic_read(&pm8001_dev->running_req) : -1);
+	}
+
 	task->lldd_task = NULL;
 	ccb->task = NULL;
 	ccb->ccb_tag = 0xFFFFFFFF;
@@ -556,10 +572,10 @@ void pm8001_ccb_task_free(struct pm8001_hba_info *pm8001_ha,
 	pm8001_tag_free(pm8001_ha, ccb_idx);
 }
 
- /**
-  * pm8001_alloc_dev - find a empty pm8001_device
-  * @pm8001_ha: our hba card information
-  */
+/**
+ * pm8001_alloc_dev - find a empty pm8001_device
+ * @pm8001_ha: our hba card information
+ */
 static struct pm8001_device *pm8001_alloc_dev(struct pm8001_hba_info *pm8001_ha)
 {
 	u32 dev;
@@ -684,8 +700,7 @@ int pm8001_dev_found(struct domain_device *dev)
 
 void pm8001_task_done(struct sas_task *task)
 {
-	if (!del_timer(&task->slow_task->timer))
-		return;
+	del_timer(&task->slow_task->timer);
 	complete(&task->slow_task->completion);
 }
 
@@ -693,9 +708,14 @@ static void pm8001_tmf_timedout(struct timer_list *t)
 {
 	struct sas_task_slow *slow = from_timer(slow, t, timer);
 	struct sas_task *task = slow->task;
+	unsigned long flags;
 
-	task->task_state_flags |= SAS_TASK_STATE_ABORTED;
-	complete(&task->slow_task->completion);
+	spin_lock_irqsave(&task->task_state_lock, flags);
+	if (!(task->task_state_flags & SAS_TASK_STATE_DONE)) {
+		task->task_state_flags |= SAS_TASK_STATE_ABORTED;
+		complete(&task->slow_task->completion);
+	}
+	spin_unlock_irqrestore(&task->task_state_lock, flags);
 }
 
 #define PM8001_TASK_TIMEOUT 20
@@ -707,7 +727,7 @@ static void pm8001_tmf_timedout(struct timer_list *t)
   * @parameter: ssp task parameter.
   *
   * when errors or exception happened, we may want to do something, for example
-  * abort the issued task which result in this execption, it is done by calling
+  * abort the issued task which result in this exception, it is done by calling
   * this function, note it is also with the task execute interface.
   */
 static int pm8001_exec_internal_tmf_task(struct domain_device *dev,
@@ -748,17 +768,19 @@ static int pm8001_exec_internal_tmf_task(struct domain_device *dev,
 		}
 		res = -TMF_RESP_FUNC_FAILED;
 		/* Even TMF timed out, return direct. */
-		if ((task->task_state_flags & SAS_TASK_STATE_ABORTED)) {
-			if (!(task->task_state_flags & SAS_TASK_STATE_DONE)) {
-				pm8001_dbg(pm8001_ha, FAIL,
-					   "TMF task[%x]timeout.\n",
-					   tmf->tmf);
-				goto ex_err;
-			}
+		if (task->task_state_flags & SAS_TASK_STATE_ABORTED) {
+			struct pm8001_ccb_info *ccb = task->lldd_task;
+
+			pm8001_dbg(pm8001_ha, FAIL, "TMF task[%x]timeout.\n",
+				   tmf->tmf);
+
+			if (ccb)
+				ccb->task = NULL;
+			goto ex_err;
 		}
 
 		if (task->task_status.resp == SAS_TASK_COMPLETE &&
-			task->task_status.stat == SAM_STAT_GOOD) {
+			task->task_status.stat == SAS_SAM_STAT_GOOD) {
 			res = TMF_RESP_FUNC_COMPLETE;
 			break;
 		}
@@ -834,16 +856,13 @@ pm8001_exec_internal_task_abort(struct pm8001_hba_info *pm8001_ha,
 		wait_for_completion(&task->slow_task->completion);
 		res = TMF_RESP_FUNC_FAILED;
 		/* Even TMF timed out, return direct. */
-		if ((task->task_state_flags & SAS_TASK_STATE_ABORTED)) {
-			if (!(task->task_state_flags & SAS_TASK_STATE_DONE)) {
-				pm8001_dbg(pm8001_ha, FAIL,
-					   "TMF task timeout.\n");
-				goto ex_err;
-			}
+		if (task->task_state_flags & SAS_TASK_STATE_ABORTED) {
+			pm8001_dbg(pm8001_ha, FAIL, "TMF task timeout.\n");
+			goto ex_err;
 		}
 
 		if (task->task_status.resp == SAS_TASK_COMPLETE &&
-			task->task_status.stat == SAM_STAT_GOOD) {
+			task->task_status.stat == SAS_SAM_STAT_GOOD) {
 			res = TMF_RESP_FUNC_COMPLETE;
 			break;
 
@@ -986,11 +1005,12 @@ void pm8001_open_reject_retry(
 }
 
 /**
- * pm8001_I_T_nexus_reset()
-  * Standard mandates link reset for ATA  (type 0) and hard reset for
-  * SSP (type 1) , only for RECOVERY
-  * @dev: the device structure for the device to reset.
-  */
+ * pm8001_I_T_nexus_reset() - reset the initiator/target connection
+ * @dev: the device structure for the device to reset.
+ *
+ * Standard mandates link reset for ATA (type 0) and hard reset for
+ * SSP (type 1), only for RECOVERY
+ */
 int pm8001_I_T_nexus_reset(struct domain_device *dev)
 {
 	int rc = TMF_RESP_FUNC_FAILED;
@@ -1184,7 +1204,7 @@ int pm8001_abort_task(struct sas_task *task)
 	struct pm8001_device *pm8001_dev;
 	struct pm8001_tmf_task tmf_task;
 	int rc = TMF_RESP_FUNC_FAILED, ret;
-	u32 phy_id;
+	u32 phy_id, port_id;
 	struct sas_task_slow slow_task;
 
 	if (unlikely(!task || !task->lldd_task || !task->dev))
@@ -1231,6 +1251,7 @@ int pm8001_abort_task(struct sas_task *task)
 			DECLARE_COMPLETION_ONSTACK(completion_reset);
 			DECLARE_COMPLETION_ONSTACK(completion);
 			struct pm8001_phy *phy = pm8001_ha->phy + phy_id;
+			port_id = phy->port->port_id;
 
 			/* 1. Set Device state as Recovery */
 			pm8001_dev->setds_completion = &completion;
@@ -1282,6 +1303,10 @@ int pm8001_abort_task(struct sas_task *task)
 						PORT_RESET_TMO);
 				if (phy->port_reset_status == PORT_RESET_TMO) {
 					pm8001_dev_gone_notify(dev);
+					PM8001_CHIP_DISP->hw_event_ack_req(
+						pm8001_ha, 0,
+						0x07, /*HW_EVENT_PHY_DOWN ack*/
+						port_id, phy_id, 0, 0);
 					goto out;
 				}
 			}
@@ -1355,4 +1380,19 @@ int pm8001_clear_task_set(struct domain_device *dev, u8 *lun)
 		   pm8001_dev->device_id);
 	tmf_task.tmf = TMF_CLEAR_TASK_SET;
 	return pm8001_issue_ssp_tmf(dev, lun, &tmf_task);
+}
+
+void pm8001_port_formed(struct asd_sas_phy *sas_phy)
+{
+	struct sas_ha_struct *sas_ha = sas_phy->ha;
+	struct pm8001_hba_info *pm8001_ha = sas_ha->lldd_ha;
+	struct pm8001_phy *phy = sas_phy->lldd_phy;
+	struct asd_sas_port *sas_port = sas_phy->port;
+	struct pm8001_port *port = phy->port;
+
+	if (!sas_port) {
+		pm8001_dbg(pm8001_ha, FAIL, "Received null port\n");
+		return;
+	}
+	sas_port->lldd_port = port;
 }

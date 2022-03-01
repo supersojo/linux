@@ -11,12 +11,10 @@
 
 #include <linux/idr.h>
 
-#define PREFIX "ACPI: "
-
 int early_acpi_osi_init(void);
 int acpi_osi_init(void);
 acpi_status acpi_os_initialize1(void);
-int acpi_scan_init(void);
+void acpi_scan_init(void);
 #ifdef CONFIG_PCI
 void acpi_pci_root_init(void);
 void acpi_pci_link_init(void);
@@ -88,7 +86,7 @@ void acpi_device_hotplug(struct acpi_device *adev, u32 src);
 bool acpi_scan_is_offline(struct acpi_device *adev, bool uevent);
 
 acpi_status acpi_sysfs_table_handler(u32 event, void *table, void *context);
-void acpi_scan_table_handler(u32 event, void *table, void *context);
+void acpi_scan_table_notify(void);
 
 /* --------------------------------------------------------------------------
                      Device Node Initialization / Removal
@@ -142,7 +140,7 @@ int acpi_device_sleep_wake(struct acpi_device *dev,
 int acpi_power_get_inferred_state(struct acpi_device *device, int *state);
 int acpi_power_on_resources(struct acpi_device *device, int state);
 int acpi_power_transition(struct acpi_device *device, int state);
-void acpi_turn_off_unused_power_resources(bool init);
+void acpi_turn_off_unused_power_resources(void);
 
 /* --------------------------------------------------------------------------
                               Device Power Management
@@ -168,6 +166,13 @@ static inline void acpi_early_processor_osc(void) {}
 /* --------------------------------------------------------------------------
                                   Embedded Controller
    -------------------------------------------------------------------------- */
+
+enum acpi_ec_event_state {
+	EC_EVENT_READY = 0,	/* Event work can be submitted */
+	EC_EVENT_IN_PROGRESS,	/* Event work is pending or being processed */
+	EC_EVENT_COMPLETE,	/* Event work processing has completed */
+};
+
 struct acpi_ec {
 	acpi_handle handle;
 	int gpe;
@@ -184,7 +189,10 @@ struct acpi_ec {
 	spinlock_t lock;
 	struct work_struct work;
 	unsigned long timestamp;
-	unsigned long nr_pending_queries;
+	enum acpi_ec_event_state event_state;
+	unsigned int events_to_process;
+	unsigned int events_in_progress;
+	unsigned int queries_in_progress;
 	bool busy_polling;
 	unsigned int polling_guard;
 };
@@ -234,6 +242,15 @@ static inline int suspend_nvs_alloc(void) { return 0; }
 static inline void suspend_nvs_free(void) {}
 static inline int suspend_nvs_save(void) { return 0; }
 static inline void suspend_nvs_restore(void) {}
+#endif
+
+#ifdef CONFIG_X86
+bool force_storage_d3(void);
+#else
+static inline bool force_storage_d3(void)
+{
+	return false;
+}
 #endif
 
 /*--------------------------------------------------------------------------

@@ -96,13 +96,6 @@ struct btrfs_transaction {
 
 	spinlock_t releasing_ebs_lock;
 	struct list_head releasing_ebs;
-
-	/*
-	 * The number of bytes currently reserved, by all transaction handles
-	 * attached to this transaction, for metadata extents of the chunk tree.
-	 */
-	atomic64_t chunk_bytes_reserved;
-	wait_queue_head_t chunk_reserve_wait;
 };
 
 #define __TRANS_FREEZABLE	(1U << 0)
@@ -122,8 +115,6 @@ struct btrfs_transaction {
 
 #define TRANS_EXTWRITERS	(__TRANS_START | __TRANS_ATTACH)
 
-#define BTRFS_SEND_TRANS_STUB	((void *)1)
-
 struct btrfs_trans_handle {
 	u64 transid;
 	u64 bytes_reserved;
@@ -132,6 +123,8 @@ struct btrfs_trans_handle {
 	struct btrfs_transaction *transaction;
 	struct btrfs_block_rsv *block_rsv;
 	struct btrfs_block_rsv *orig_rsv;
+	/* Set by a task that wants to create a snapshot. */
+	struct btrfs_pending_snapshot *pending_snapshot;
 	refcount_t use_count;
 	unsigned int type;
 	/*
@@ -141,11 +134,9 @@ struct btrfs_trans_handle {
 	short aborted;
 	bool adding_csums;
 	bool allocating_chunk;
-	bool can_flush_pending_bgs;
+	bool removing_chunk;
 	bool reloc_reserved;
-	bool dirty;
 	bool in_fsync;
-	struct btrfs_root *root;
 	struct btrfs_fs_info *fs_info;
 	struct list_head new_bgs;
 };
@@ -227,8 +218,7 @@ void btrfs_add_dead_root(struct btrfs_root *root);
 int btrfs_defrag_root(struct btrfs_root *root);
 int btrfs_clean_one_deleted_snapshot(struct btrfs_root *root);
 int btrfs_commit_transaction(struct btrfs_trans_handle *trans);
-int btrfs_commit_transaction_async(struct btrfs_trans_handle *trans,
-				   int wait_for_unblock);
+void btrfs_commit_transaction_async(struct btrfs_trans_handle *trans);
 int btrfs_end_transaction_throttle(struct btrfs_trans_handle *trans);
 bool btrfs_should_end_transaction(struct btrfs_trans_handle *trans);
 void btrfs_throttle(struct btrfs_fs_info *fs_info);

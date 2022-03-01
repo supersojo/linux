@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Copyright � 2008-2018 Intel Corporation
+ * Copyright © 2008-2018 Intel Corporation
  */
 
 #ifndef _I915_GPU_ERROR_H_
@@ -29,7 +29,6 @@ struct drm_i915_private;
 struct i915_vma_compress;
 struct intel_engine_capture_vma;
 struct intel_overlay_error_state;
-struct intel_display_error_state;
 
 struct i915_vma_coredump {
 	struct i915_vma_coredump *next;
@@ -40,10 +39,8 @@ struct i915_vma_coredump {
 	u64 gtt_size;
 	u32 gtt_page_sizes;
 
-	int num_pages;
-	int page_count;
 	int unused;
-	u32 *pages[];
+	struct list_head page_list;
 };
 
 struct i915_request_coredump {
@@ -182,7 +179,6 @@ struct i915_gpu_coredump {
 	struct i915_params params;
 
 	struct intel_overlay_error_state *overlay;
-	struct intel_display_error_state *display;
 
 	struct scatterlist *sgl, *fit;
 };

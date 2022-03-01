@@ -2033,10 +2033,10 @@ static void calculate_bandwidth(
 	kfree(surface_type);
 free_tiling_mode:
 	kfree(tiling_mode);
-free_yclk:
-	kfree(yclk);
 free_sclk:
 	kfree(sclk);
+free_yclk:
+	kfree(yclk);
 }
 
 /*******************************************************************************
@@ -2863,6 +2863,7 @@ static void populate_initial_data(
 			data->bytes_per_pixel[num_displays + 4] = 4;
 			break;
 		case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616:
+		case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616:
 		case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F:
 			data->bytes_per_pixel[num_displays + 4] = 8;
 			break;
@@ -2966,6 +2967,7 @@ static void populate_initial_data(
 				data->bytes_per_pixel[num_displays + 4] = 4;
 				break;
 			case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616:
+			case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616:
 			case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F:
 				data->bytes_per_pixel[num_displays + 4] = 8;
 				break;

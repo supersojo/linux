@@ -21,7 +21,7 @@ mt7663u_mcu_send_message(struct mt76_dev *mdev, struct sk_buff *skb,
 	int ret, ep, len, pad;
 
 	mt7615_mcu_fill_msg(dev, skb, cmd, seq);
-	if (cmd != MCU_CMD_FW_SCATTER)
+	if (cmd != MCU_CMD(FW_SCATTER))
 		ep = MT_EP_OUT_INBAND_CMD;
 	else
 		ep = MT_EP_OUT_AC_BE;
@@ -55,10 +55,7 @@ int mt7663u_mcu_init(struct mt7615_dev *dev)
 
 	dev->mt76.mcu_ops = &mt7663u_mcu_ops,
 
-	/* usb does not support runtime-pm */
-	clear_bit(MT76_STATE_PM, &dev->mphy.state);
 	mt76_set(dev, MT_UDMA_TX_QSEL, MT_FW_DL_EN);
-
 	if (test_and_clear_bit(MT76_STATE_POWER_OFF, &dev->mphy.state)) {
 		mt7615_mcu_restart(&dev->mt76);
 		if (!mt76_poll_msec(dev, MT_CONN_ON_MISC,

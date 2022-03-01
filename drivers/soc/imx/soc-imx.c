@@ -36,6 +36,10 @@ static int __init imx_soc_device_init(void)
 	int ret;
 	int i;
 
+	/* Return early if this is running on devices with different SoCs */
+	if (!__mxc_cpu_type)
+		return 0;
+
 	if (of_machine_is_compatible("fsl,ls1021a"))
 		return 0;
 
@@ -69,6 +73,9 @@ static int __init imx_soc_device_init(void)
 		break;
 	case MXC_CPU_MX35:
 		soc_id = "i.MX35";
+		break;
+	case MXC_CPU_MX50:
+		soc_id = "i.MX50";
 		break;
 	case MXC_CPU_MX51:
 		ocotp_compat = "fsl,imx51-iim";

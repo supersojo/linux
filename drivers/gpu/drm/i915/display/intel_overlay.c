@@ -34,6 +34,7 @@
 
 #include "i915_drv.h"
 #include "i915_reg.h"
+#include "intel_de.h"
 #include "intel_display_types.h"
 #include "intel_frontbuffer.h"
 #include "intel_overlay.h"
@@ -383,8 +384,7 @@ static void intel_overlay_off_tail(struct intel_overlay *overlay)
 		i830_overlay_clock_gating(dev_priv, true);
 }
 
-__i915_active_call static void
-intel_overlay_last_flip_retire(struct i915_active *active)
+static void intel_overlay_last_flip_retire(struct i915_active *active)
 {
 	struct intel_overlay *overlay =
 		container_of(active, typeof(*overlay), last_flip);
@@ -550,7 +550,7 @@ static u32 calc_swidthsw(struct drm_i915_private *dev_priv, u32 offset, u32 widt
 {
 	u32 sw;
 
-	if (IS_DISPLAY_VER(dev_priv, 2))
+	if (DISPLAY_VER(dev_priv) == 2)
 		sw = ALIGN((offset & 31) + width, 32);
 	else
 		sw = ALIGN((offset & 63) + width, 64);
@@ -820,7 +820,7 @@ static int intel_overlay_do_put_image(struct intel_overlay *overlay,
 			oconfig |= OCONF_CC_OUT_8BIT;
 		if (crtc_state->gamma_enable)
 			oconfig |= OCONF_GAMMA2_ENABLE;
-		if (IS_DISPLAY_VER(dev_priv, 4))
+		if (DISPLAY_VER(dev_priv) == 4)
 			oconfig |= OCONF_CSC_MODE_BT709;
 		oconfig |= pipe == 0 ?
 			OCONF_PIPE_A : OCONF_PIPE_B;
@@ -959,6 +959,9 @@ static int check_overlay_dst(struct intel_overlay *overlay,
 	const struct intel_crtc_state *pipe_config =
 		overlay->crtc->config;
 
+	if (rec->dst_height == 0 || rec->dst_width == 0)
+		return -EINVAL;
+
 	if (rec->dst_x < pipe_config->pipe_src_w &&
 	    rec->dst_x + rec->dst_width <= pipe_config->pipe_src_w &&
 	    rec->dst_y < pipe_config->pipe_src_h &&
@@ -1054,7 +1057,7 @@ static int check_overlay_src(struct drm_i915_private *dev_priv,
 
 	if (rec->stride_Y & stride_mask || rec->stride_UV & stride_mask)
 		return -EINVAL;
-	if (IS_DISPLAY_VER(dev_priv, 4) && rec->stride_Y < 512)
+	if (DISPLAY_VER(dev_priv) == 4 && rec->stride_Y < 512)
 		return -EINVAL;
 
 	tmp = (rec->flags & I915_OVERLAY_TYPE_MASK) == I915_OVERLAY_YUV_PLANAR ?
@@ -1281,7 +1284,7 @@ int intel_overlay_attrs_ioctl(struct drm_device *dev, void *data,
 		attrs->contrast   = overlay->contrast;
 		attrs->saturation = overlay->saturation;
 
-		if (!IS_DISPLAY_VER(dev_priv, 2)) {
+		if (DISPLAY_VER(dev_priv) != 2) {
 			attrs->gamma0 = intel_de_read(dev_priv, OGAMC0);
 			attrs->gamma1 = intel_de_read(dev_priv, OGAMC1);
 			attrs->gamma2 = intel_de_read(dev_priv, OGAMC2);
@@ -1305,7 +1308,7 @@ int intel_overlay_attrs_ioctl(struct drm_device *dev, void *data,
 		update_reg_attrs(overlay, overlay->regs);
 
 		if (attrs->flags & I915_OVERLAY_UPDATE_GAMMA) {
-			if (IS_DISPLAY_VER(dev_priv, 2))
+			if (DISPLAY_VER(dev_priv) == 2)
 				goto out_unlock;
 
 			if (overlay->active) {
@@ -1382,7 +1385,7 @@ void intel_overlay_setup(struct drm_i915_private *dev_priv)
 	if (!HAS_OVERLAY(dev_priv))
 		return;
 
-	engine = dev_priv->gt.engine[RCS0];
+	engine = to_gt(dev_priv)->engine[RCS0];
 	if (!engine || !engine->kernel_context)
 		return;
 
@@ -1401,7 +1404,7 @@ void intel_overlay_setup(struct drm_i915_private *dev_priv)
 	overlay->saturation = 146;
 
 	i915_active_init(&overlay->last_flip,
-			 NULL, intel_overlay_last_flip_retire);
+			 NULL, intel_overlay_last_flip_retire, 0);
 
 	ret = get_registers(overlay, OVERLAY_NEEDS_PHYSICAL(dev_priv));
 	if (ret)
