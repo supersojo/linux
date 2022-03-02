@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "Clock support for Amlogic platforms(8726m3)"
+	depends on ARCH_MESON3 || COMPILE_TEST
+
+config COMMON_CLK_MESON_REGMAP
+	tristate
+	select REGMAP
+
+config COMMON_CLK_MESON_CLOCK_MEASURE
+	tristate
+	select COMMON_CLK_MESON_REGMAP
+
+
+config COMMON_CLK_MESON3
+    bool "Meson3 SoC Clock controller support"
+    depends on ARM
+    default y
+	select COMMON_CLK_MESON_CLOCK_MEASURE
+	select MFD_SYSCON
+	select RESET_CONTROLLER
+	help
+	  Support for the clock controller on AmLogic 8726m3 (Meson3),
+
+endmenu

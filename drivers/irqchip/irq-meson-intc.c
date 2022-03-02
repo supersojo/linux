@@ -151,8 +151,8 @@ meson_intc_handle(struct pt_regs *regs)
 		i = 0;
 		do {
 			if ((irqstat>>i)&0x1) {
-
-				handle_domain_irq(meson_intc_domain, irqnr+i, regs);
+				//handle_domain_irq(meson_intc_domain, irqnr+i, regs);
+                generic_handle_domain_irq(meson_intc_domain, irqnr+i);
 				return;
 			}
 

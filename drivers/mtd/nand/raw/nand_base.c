@@ -250,7 +250,7 @@ int nand_bbm_get_next_page(struct nand_chip *chip, int page)
  *
  * Check, if the block is bad.
  */
-#define HACK_NO_BAD
+//#define HACK_NO_BAD
 static int nand_block_bad(struct nand_chip *chip, loff_t ofs)
 {
 	int first_page, page_offset;
@@ -265,10 +265,11 @@ static int nand_block_bad(struct nand_chip *chip, loff_t ofs)
 		res = chip->ecc.read_oob(chip, first_page + page_offset);
 		if (res < 0)
 			return res;
+#if 0
 #ifdef HACK_NO_BAD
 		printk("page:0x%x with oob\n", first_page);
 		for (i=0; i<8; i+=4) {
-			printk("%02x:%02x %02x %02x %02x\n",i
+			printk("%02x:%02x %02x %02x %02x\n",i,
 				chip->oob_poi[i+0],
 				chip->oob_poi[i+1],
 				chip->oob_poi[i+2],
@@ -276,9 +277,9 @@ static int nand_block_bad(struct nand_chip *chip, loff_t ofs)
 		}
 
 		bad = 0xFF;
-#else
-		bad = chip->oob_poi[chip->badblockpos];
 #endif
+#endif
+		bad = chip->oob_poi[chip->badblockpos];
 		if (likely(chip->badblockbits == 8))
 			res = bad != 0xFF;
 		else
@@ -4492,7 +4493,7 @@ static int nand_erase(struct mtd_info *mtd, struct erase_info *instr)
 	
 	instr1 = *instr;
 	instr2 = *instr;
-	page = isntr1.addr/0x1000;
+	page = instr1.addr/0x1000;
 	page_in_blk = page/2%256;
 	blk_in_plane = page/2/256;
 	instr1.addr = blk_in_plane*2*256*0x1000;
@@ -6100,6 +6101,7 @@ static const struct nand_ops rawnand_ops = {
 	.isbad = rawnand_isbad,
 };
 
+#if 0
 static void test_nand(struct mtd_info *mtd)
 {
 	int ret;
@@ -6163,6 +6165,7 @@ static void test_nand(struct mtd_info *mtd)
 	e.len = 0x200000;
 	mtd_erase(mtd, &e);
 }
+#endif
 
 /**
  * nand_scan_tail - Scan for the NAND device
@@ -6458,13 +6461,13 @@ static int nand_scan_tail(struct nand_chip *chip)
 	if (chip->options & NAND_SKIP_BBTSCAN)
 		return 0;
 
-#if 0
+#if 1
 	/* Build bad block table */
 	ret = nand_create_bbt(chip);
 	if (ret)
 		goto err_free_secure_regions;
 #endif
-	test_nand(mtd);
+	//test_nand(mtd);
 	return 0;
 
 err_free_secure_regions:

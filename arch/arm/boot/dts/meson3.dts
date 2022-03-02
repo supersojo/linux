@@ -61,6 +61,11 @@
 			};
 */
 
+            cm: cm@8758 {/* clock measure function */
+                compatible = "amlogic,meson-clock-measure";
+                reg = <0x8758 0x10>;
+            }; 
+
 			meson3_nfc: nfc@8600 {
 				compatible = "amlogic,meson-8726m3-nfc";
 				reg = <0x8600 0x30>;
